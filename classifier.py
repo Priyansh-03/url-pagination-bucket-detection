@@ -71,24 +71,41 @@ HTML Snippet:
 
 Return ONLY: next OR pageselect"""
             valid_choices = ['next', 'pageselect']
-        else:  # behavioral
+        if branch == 'structural':
             prompt = f"""Address: {url}
 Signals detected so far: {"; ".join(detected_signals)}
 
-TASK: This page has NO traditional pagination. Your job is to decide between EXACTLY TWO options:
-- **loadmore**: A button that says "Load More", "Show More", "View More", "Show All" that loads content WITHOUT navigating.
-- **scrolldown**: Content loads AUTOMATICALLY when scrolling down (infinite scroll), no button click needed.
+TASK: This page HAS pagination elements. Your job is to decide between EXACTLY TWO options:
+- **next**: A "Next" button, arrow (>, →), or link to go to the next page sequentially.
+- **pageselect**: Numbered page links (1, 2, 3...) or jump buttons (», Last) allowing direct page selection.
 
 RULES:
-- If there's a visible button to load more content → loadmore
-- If content appears automatically as you scroll → scrolldown
-- If the page has very few items and no way to load more, lean towards scrolldown
+- If you see any ">" arrow, textual "Next", or chevron → next (next takes priority)
+- If you see ONLY numbered page links (1, 2, 3) without any "Next" arrows → pageselect
+- If you see << or >> and they act as sequential/last page buttons → next
+- IGNORE "Read More" buttons that link to individual articles.
 
 HTML Snippet:
 {page_snippet[:3000]}
 
-Return ONLY: loadmore OR scrolldown"""
-            valid_choices = ['loadmore', 'scrolldown']
+Return ONLY: next OR pageselect"""
+            valid_choices = ['next', 'pageselect']
+        else:  # behavioral confirmation
+            prompt = f"""Address: {url}
+Signals detected so far: {"; ".join(detected_signals)}
+
+TASK: This page has NO traditional pagination buttons. Your job is to verify if it qualifies as **scrolldown**.
+- **scrolldown**: Content loads AUTOMATICALLY when scrolling down (infinite scroll).
+
+RULES:
+- If content appears automatically as you scroll → scrolldown
+- If the page has very few items and no interaction, return 'none'
+
+HTML Snippet:
+{page_snippet[:3000]}
+
+Return ONLY: scrolldown OR none"""
+            valid_choices = ['scrolldown', 'none']
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -194,13 +211,15 @@ class PaginationClassifier:
         
         def extract_page_signals(driver_instance):
             signals = []
-            indicators = {'next': False, 'pageselect': False, 'loadmore': False, 'scrolldown': False}
+            indicators = {'next': False, 'pageselect': False, 'scrolldown': False}
             
-            # --- 1. THE STRUCTURAL WALL: DETECT PAGINATORS ---
             structural_evidence_found = False
+            has_autopager_results = False
             page_source = driver_instance.page_source
             try:
                 extracted_links = autopager.extract(page_source)
+                if extracted_links:
+                    has_autopager_results = True
             except:
                 extracted_links = []
             
@@ -315,40 +334,32 @@ class PaginationClassifier:
 
                 if found_range:
                     indicators['pageselect'] = True
-                    signals.append(f"Paginator Wall: Found range pattern via textContent")
+                    signals.append(f"Paginator Wall: Found range pattern (Page x of y)")
                     structural_evidence_found = True
-                else:
-                    # Debug: Print found text if we are in Hatch or Amagi and still not found
-                    if any(x in driver_instance.current_url for x in ['hatch', 'amagi']):
-                        print(f"  Debug: [Structural] Range patterns not found in bottom text (length={len(p_text)}). Sample: {p_text[:100]} ... {p_text[-200:]}")
                 
-                # 1.3.1 Symbol Based (» , «)
-                if not indicators['pageselect']:
-                    symbols = ['»', '>>', '«', '<<']
-                    for sym in symbols:
-                        xpath = f"//*[(self::a or self::button or self::span) and (contains(., '{sym}') or contains(@aria-label, '{sym}'))]"
-                        try:
-                            # Look for these specifically
-                            elements = driver_instance.find_elements(By.XPATH, xpath)
-                            for e in elements:
-                                if e.is_displayed():
-                                    # If it's a small element or interactive, it's a good signal
-                                    if e.tag_name in ['a', 'button'] or (e.get_attribute('onclick') or e.get_attribute('href')):
-                                        indicators['pageselect'] = True
-                                        signals.append(f"Heuristic: Found PAGESELECT symbol '{sym}' in interactive '{e.tag_name}'")
-                                        structural_evidence_found = True
-                                        break
-                                    # Support spans inside links
-                                    try:
-                                        p1 = e.find_element(By.XPATH, "./parent::*")
-                                        if p1.tag_name in ['a', 'button']:
-                                            indicators['pageselect'] = True
-                                            signals.append(f"Heuristic: Found PAGESELECT symbol '{sym}' inside '{p1.tag_name}'")
-                                            structural_evidence_found = True
-                                            break
-                                    except: pass
-                            if indicators['pageselect']: break
-                        except: continue
+                # 1.3.1 NEXT priority symbols ( > , → , » )
+                # Per Case 1, 2, 3, 5: arrows/chevrons imply 'next'
+                next_symbols = ['>', '→', '›', '➜', '»', '>>']
+                for sym in next_symbols:
+                    xpath = f"//*[(self::a or self::button or self::span) and (text()='{sym}' or contains(., '{sym}') or contains(@aria-label, '{sym}'))]"
+                    try:
+                        elements = driver_instance.find_elements(By.XPATH, xpath)
+                        for e in elements:
+                            if e.is_displayed():
+                                # Filter out obvious non-pagination (back to top)
+                                if 'top' in e.text.lower(): continue
+                                indicators['next'] = True
+                                signals.append(f"Heuristic: Found NEXT symbol '{sym}'")
+                                structural_evidence_found = True
+                                break
+                        if indicators['next']: break
+                    except: continue
+
+                # 1.3.2 PAGESELECT symbols (Pure numbers, or jump symbols IF no next symbols)
+                if not indicators['next']:
+                    pageselect_symbols = ['«', '<<'] # These are usually back/first, if alone usually pageselect
+                    # Also numbered buttons (Case 1 for pageselect)
+                    # We already check for PAGE links via autopager above.
 
                 # 1.3.2 Numbered Button Groups (Hatch/Numbered Pagination)
                 # Look for contiguous numbers 1, 2 in small area or siblings
@@ -393,145 +404,7 @@ class PaginationClassifier:
                     except: pass
             except: pass
 
-            # 1.4 Domain Overrides (Refined: Only if next-only is truly preferred)
-            # User feedback: Always prefer PAGESELECT if numbers exist, even on platforms.
-            # So we remove the aggressive NEXT override.
-
-            # --- 2. THE BEHAVIORAL WALL: DETECT DYNAMIC LOADING ---
-            LOAD_MORE_SELECTORS = [
-                '#tile-more-results', 'button#tile-more-results', 'button.load-more', 'a.load-more', 
-                '.load-more', 'a.load_more_cta', '.load_more_cta', '.show-more', '.btn-load-more',
-                'a.pagination-show-all', '.pagination-show-all'
-            ]
-            
-            strong_load_keywords = [
-                'view more jobs', 'load more jobs', 'show more jobs', 'see more jobs',
-                'view all jobs', 'show all jobs', 'see all jobs', 'display more jobs',
-                'view opening', 'view more opening', 'show more opening',
-                'view all openings', 'explore more jobs', 'click for more jobs', 'show jobs'
-            ]
-            
-            loadmore_candidate = None
-            is_strong_loadmore = False
-
-            # 2.1 CSS Selectors
-            for sel in LOAD_MORE_SELECTORS:
-                try:
-                    elements = driver_instance.find_elements(By.CSS_SELECTOR, sel)
-                    for el in elements:
-                        if el.is_displayed():
-                            loadmore_candidate = el
-                            signals.append(f"Heuristic: Found LoadMore via selector '{sel}'")
-                            break
-                    if loadmore_candidate: break
-                except: continue
-
-            # 2.2 Strong Keyword Priority
-            if not loadmore_candidate:
-                for kw in strong_load_keywords:
-                    try:
-                        xpath = f"//*[(self::button or self::a) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{kw}')]"
-                        elements = driver_instance.find_elements(By.XPATH, xpath)
-                        for el in elements:
-                            if el.is_displayed():
-                                loadmore_candidate = el
-                                is_strong_loadmore = True
-                                signals.append(f"Heuristic: Found STRONG LoadMore candidate '{kw}'")
-                                break
-                        if loadmore_candidate: break
-                    except: continue
-
-            # 2.3 Try Attribute based (aria-label, title)
-            if not loadmore_candidate:
-                attr_keywords = ['load more jobs', 'show all jobs', 'view more jobs']
-                for kw in attr_keywords:
-                    xpath = f"//*[(self::button or self::a) and (contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{kw}') or contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{kw}'))]"
-                    try:
-                        elements = driver_instance.find_elements(By.XPATH, xpath)
-                        for el in elements:
-                            if el.is_displayed():
-                                loadmore_candidate = el
-                                signals.append(f"Heuristic: Found LoadMore via attribute aria-label/title keyword '{kw}'")
-                                break
-                        if loadmore_candidate: break
-                    except: continue
-
-            return indicators, signals, loadmore_candidate, is_strong_loadmore
-
-        def verify_loadmore_behavior(candidate_element, is_strong=False):
-            if not candidate_element: return False
-            
-            try:
-                initial_url = self.driver.current_url.split('#')[0].rstrip('/')
-                initial_height = self.get_page_height()
-                initial_count = len(self.driver.find_elements(By.XPATH, "//*"))
-                
-                # Scroll to element to ensure it's clickable
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", candidate_element)
-                time.sleep(1)
-                
-                # Try clicking with retry for stale elements
-                max_click_retries = 2
-                for attempt in range(max_click_retries):
-                    try:
-                        # Re-locate element if possible to avoid stale ref
-                        if attempt > 0:
-                            # If we have a selector or xpath, we could try re-finding
-                            # but for now we just try catching the error and failing gracefully
-                            pass
-                        
-                        try:
-                            candidate_element.click()
-                        except:
-                            self.driver.execute_script("arguments[0].click();", candidate_element)
-                        break
-                    except Exception as click_err:
-                        if "stale" in str(click_err).lower() and attempt < max_click_retries - 1:
-                            print(f"  Verification: Stale element on click attempt {attempt+1}, retrying...")
-                            time.sleep(1)
-                            continue
-                        raise click_err
-                
-                time.sleep(4) # Wait for potential dynamic load (SuccessFactors is slow)
-                
-                # CHECK 1: URL Change (Navigation is NOT loadmore, UNLESS it's a known platform redirect)
-                current_url = self.driver.current_url.split('#')[0].rstrip('/')
-                
-                # Platforms where 'View All' or 'Load More' might trigger a slight URL change but stay on same "View"
-                TRUSTED_PLATFORMS = ['successfactors.com', 'myworkdayjobs.com', 'peoplestrong.com']
-                is_platform_redirect = any(p in current_url for p in TRUSTED_PLATFORMS)
-                
-                if current_url != initial_url and not is_platform_redirect:
-                    # If it's just a query param or slight path change on same domain, it might still be loadmore
-                    from urllib.parse import urlparse
-                    old_p = urlparse(initial_url)
-                    new_p = urlparse(current_url)
-                    if old_p.netloc != new_p.netloc:
-                        print(f"  Verification: Domain changed ({old_p.netloc} -> {new_p.netloc}). Rejecting LoadMore.")
-                        return False
-                
-                # CHECK 2: DOM Growth or Height Increase
-                final_height = self.get_page_height()
-                final_count = len(self.driver.find_elements(By.XPATH, "//*"))
-                
-                # If it's a strong candidate, we are VERY lenient (maybe just 2-3 items loaded)
-                growth_threshold = 2 if is_strong else 8
-                height_threshold = 50 if is_strong else 400
-                
-                if final_count > initial_count + growth_threshold or final_height > initial_height + height_threshold:
-                    print(f"  Verification: Content Growth detected ({final_count - initial_count} elements). Confirming LoadMore.")
-                    return True
-                
-                # If platform redirect happened (e.g. SuccessFactors 'View All' loads a different view with more jobs)
-                if is_platform_redirect and current_url != initial_url:
-                    print(f"  Verification: Platform redirect on {current_url}. Confirming LoadMore behavior.")
-                    return True
-
-                print(f"  Verification: No growth detected after click. Rejecting LoadMore.")
-                return False
-            except Exception as e:
-                print(f"  Verification error: {e}")
-                return False
+            return indicators, signals, has_autopager_results
 
         # --- HELPER: Extract page snippet for AI ---
         def get_page_snippet():
@@ -555,75 +428,58 @@ class PaginationClassifier:
         # ============================================================
         # STEP 1: EXTRACT SIGNALS (Main Frame + Iframes)
         # ============================================================
-        final_indicators, detected_signals, main_candidate, is_strong_loadmore = extract_page_signals(self.driver)
+        final_indicators, detected_signals, has_autopager = extract_page_signals(self.driver)
         
         # Check iframes for structural signals if not convincingly found
-        if not (final_indicators['next'] or final_indicators['pageselect']):
+        if not has_autopager:
             try:
                 iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
                 for i, frame in enumerate(iframes):
                     try:
                         self.driver.switch_to.frame(frame)
-                        f_indicators, f_signals, f_candidate, f_strong = extract_page_signals(self.driver)
+                        f_indicators, f_signals, f_has_autopager = extract_page_signals(self.driver)
                         
-                        # Merge signals and indicators
-                        for key in final_indicators:
-                            if f_indicators[key]: final_indicators[key] = True
-                        detected_signals.extend([f"Iframe {i}: {s}" for s in f_signals])
-                        
-                        if f_candidate and not main_candidate:
-                            main_candidate = f_candidate
-                            is_strong_loadmore = f_strong
+                        if f_has_autopager:
+                            has_autopager = True
+                            # Merge signals and indicators
+                            for key in final_indicators:
+                                if f_indicators[key]: final_indicators[key] = True
+                            detected_signals.extend([f"Iframe {i}: {s}" for s in f_signals])
                         
                         self.driver.switch_to.default_content()
-                        # If found a paginator in iframe, we are good
-                        if final_indicators['next'] or final_indicators['pageselect']: break
+                        if has_autopager: break
                     except:
                         self.driver.switch_to.default_content()
             except: pass
         
-        # Check if paginator was detected
-        has_paginator = final_indicators['next'] or final_indicators['pageselect']
-        
-        if has_paginator:
-            detected_signals.append("Branch: STRUCTURAL (paginator detected)")
+        if has_autopager:
+            detected_signals.append("Branch: STRUCTURAL (Autopager detected paginator)")
             
-            # --- Step 1: Check for NEXT first (User Preference/Global Rule) ---
+            # --- Step 1: Check for NEXT rules ---
             if final_indicators['next']:
                 decision = 'next'
-                detected_signals.append("Structural: NEXT found (anchor/button with 'next' or '>')")
+                detected_signals.append("Structural: NEXT rules matched (arrow, chevron, or 'next' text)")
                 print(f"  Signals: {'; '.join(detected_signals)}")
                 return decision, f"Final decision: {decision}. Signals: {detected_signals}"
             
-            # --- Step 2: Check for PAGESELECT ---
+            # --- Step 2: Check for PAGESELECT rules ---
             if final_indicators['pageselect']:
                 decision = 'pageselect'
-                detected_signals.append("Structural: No NEXT found, but PAGESELECT found (numbered links, jumps, or range)")
+                detected_signals.append("Structural: PAGESELECT rules matched (numbers/labels)")
                 print(f"  Signals: {'; '.join(detected_signals)}")
                 return decision, f"Final decision: {decision}. Signals: {detected_signals}"
             
-            # --- Step 3: Fallback to NEXT ---
-            decision = 'next'
-            detected_signals.append("Structural Fallback: Paginator signals mixed or unclear → defaulting to 'next'")
+            # --- Step 3: Fallback to DEFAULT ---
+            decision = 'default'
+            detected_signals.append("Structural Fallback: Paginator detected by Autopager but no specific rules matched → 'default'")
             print(f"  Signals: {'; '.join(detected_signals)}")
             return decision, f"Final decision: {decision}. Signals: {detected_signals}"
         
         # ============================================================
-        # BRANCH 2: BEHAVIORAL (No paginator detected)
-        # Order: Scrolldown → LoadMore → Fallback to 'next'
+        # BRANCH 2: BEHAVIORAL (Autopager detected NO paginator)
+        # Order: Scrolldown → Fallback to 'default'
         # ============================================================
-        detected_signals.append("Branch: BEHAVIORAL (no paginator detected)")
-
-        # --- NEW: Strong LoadMore Priority ---
-        # If we see 'view more jobs' etc., it takes priority over scrolldown
-        if is_strong_loadmore and main_candidate:
-            detected_signals.append("Behavioral: Priority STRONG LoadMore signal detected (job keywords)")
-            if verify_loadmore_behavior(main_candidate, is_strong=True):
-                detected_signals.append("Behavioral: Strong LoadMore CONFIRMED via priority check")
-                print(f"  Signals: {'; '.join(detected_signals)}")
-                return 'loadmore', f"Final decision: loadmore. Signals: {detected_signals}"
-            else:
-                detected_signals.append("Behavioral: Priority LoadMore failed, continuing to other checks")
+        detected_signals.append("Branch: BEHAVIORAL (Autopager NO paginator)")
         
         # --- Step 1: Scrolldown Verification (FIRST) ---
         # Per USER: Wait 2nd-3s to let website load initially
@@ -633,6 +489,7 @@ class PaginationClassifier:
         scrolldown_confirmed = False
         
         # Initial state measurements
+        initial_url = self.driver.current_url.split('#')[0].rstrip('/')
         initial_height = self.get_page_height()
         initial_element_count = len(self.driver.find_elements(By.XPATH, "//*"))
         
@@ -640,68 +497,36 @@ class PaginationClassifier:
         self.scroll_to_bottom()
         time.sleep(2) # Per USER: wait for 2 sec
         
+        current_url = self.driver.current_url.split('#')[0].rstrip('/')
         final_height = self.get_page_height()
         final_element_count = len(self.driver.find_elements(By.XPATH, "//*"))
         
-        if (final_height > initial_height + 400) or (final_element_count > initial_element_count + 8):
+        # Hard crawler rules for scrolldown: height increase, elements increase, URL unchanged
+        if (final_height > initial_height + 400 or final_element_count > initial_element_count + 8) and current_url == initial_url:
             detected_signals.append("Behavioral: Scrolldown CONFIRMED (attempt 1 - 2s wait)")
             print(f"  Signals: {'; '.join(detected_signals)}")
             return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
         
         # Second Scroll Attempt (Longer wait)
-        detected_signals.append("Scroll attempt 1: No growth. Waiting 5s for retry...")
+        detected_signals.append("Scroll attempt 1: No growth or URL changed. Waiting 5s for retry...")
         time.sleep(5) # Per USER: wait for 3 -5 sec more
         self.scroll_to_bottom()
         time.sleep(2)
         
+        current_url = self.driver.current_url.split('#')[0].rstrip('/')
         final_height = self.get_page_height()
         final_element_count = len(self.driver.find_elements(By.XPATH, "//*"))
         
-        if (final_height > initial_height + 400) or (final_element_count > initial_element_count + 8):
+        if (final_height > initial_height + 400 or final_element_count > initial_element_count + 8) and current_url == initial_url:
             detected_signals.append("Behavioral: Scrolldown CONFIRMED (attempt 2 - 5s additional wait)")
             print(f"  Signals: {'; '.join(detected_signals)}")
             return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
         else:
-            detected_signals.append("Scroll attempt 2: Still no growth.")
+            detected_signals.append("Scroll attempt 2: Still no valid scrolldown growth.")
         
-        # --- Step 2: LoadMore Button Verification (SECOND) ---
-        # Only check for loadmore if scrolldown didn't work
-        detected_signals.append("Behavioral: Scrolldown failed, testing LoadMore button...")
-        
-        if main_candidate:
-            detected_signals.append("Behavioral: Found LoadMore candidate, testing...")
-            if verify_loadmore_behavior(main_candidate, is_strong=is_strong_loadmore):
-                detected_signals.append("Behavioral: LoadMore CONFIRMED via trial click")
-                print(f"  Signals: {'; '.join(detected_signals)}")
-                return 'loadmore', f"Final decision: loadmore. Signals: {detected_signals}"
-            else:
-                detected_signals.append("Behavioral: LoadMore candidate rejected (no growth or redirected)")
-        
-        # --- Step 3: Check iframes for LoadMore ---
-        try:
-            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
-            for i, frame in enumerate(iframes):
-                if not frame.is_displayed(): continue
-                try:
-                    self.driver.switch_to.frame(frame)
-                    frame_indicators, frame_signals, frame_candidate, frame_strong = extract_page_signals(self.driver)
-                    
-                    if frame_candidate:
-                        detected_signals.append(f"Behavioral: Found LoadMore candidate in iframe {i}")
-                        if verify_loadmore_behavior(frame_candidate, is_strong=frame_strong):
-                            detected_signals.append(f"Behavioral: LoadMore CONFIRMED in iframe {i}")
-                            self.driver.switch_to.default_content()
-                            print(f"  Signals: {'; '.join(detected_signals)}")
-                            return 'loadmore', f"Final decision: loadmore (iframe). Signals: {detected_signals}"
-                    self.driver.switch_to.default_content()
-                except: 
-                    self.driver.switch_to.default_content()
-        except: 
-            pass
-        
-        # --- Final Fallback: No scrolldown, no loadmore → Default to 'next' ---
-        decision = 'next'
-        detected_signals.append("Behavioral Fallback: No scrolldown growth, no loadmore button → defaulting to 'next'")
+        # --- Final Fallback: No scrolldown growth → Default to 'default' ---
+        decision = 'default'
+        detected_signals.append("Fallback: No structural or behavioral confirmation → defaulting to 'default'")
         print(f"  Signals: {'; '.join(detected_signals)}")
         return decision, f"Final decision: {decision}. Signals: {detected_signals}"
 
