@@ -1,0 +1,11 @@
+can you make a perfect ui panel to manage all these..
+if there is any more buttons, i can add under load .. if there is anything else , i can do that changes from ui.
+
+if i want to run for any single link, i can do so
+if i want to run or multiple, i select them or select all , or select multiple, and run my script
+
+i can see beautiful output in ui and can make changes there as well
+
+if i want to change the execution queue , i can do that
+if i want to re-add any link i can do that.. it should automatically erase previous one if available
+

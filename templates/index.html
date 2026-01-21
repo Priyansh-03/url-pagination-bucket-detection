@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pagination Classifier Config</title>
+    <style>
+        :root {
+            /* Palette: Dark & Soft */
+            --bg-body: #0a0a0a;
+            --bg-panel: #161616;
+            --bg-card: #202020;
+
+            --text-main: #e0e0e0;
+            --text-muted: #a0a0a0;
+
+            --border: #333333;
+            --border-hover: #444444;
+
+            /* Accents */
+            --primary: #9d8ec2;
+            /* Soft purple */
+            --primary-hover: #b39ddb;
+            --danger: #ef5350;
+            --success: #66bb6a;
+            --warning: #ffa726;
+            --info: #42a5f5;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        .container {
+            max-width: 98vw;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            height: 95vh;
+        }
+
+        h1 {
+            font-weight: 300;
+            letter-spacing: 1px;
+            color: var(--text-main);
+            text-align: left;
+            margin: 0 0 20px 0;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        h1 span {
+            color: var(--text-muted);
+            font-size: 0.9em;
+        }
+
+        /* Panels */
+        .glass-panel {
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 12px 20px;
+            background: var(--bg-card);
+        }
+
+        button {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        button:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: var(--border-hover);
+            color: #fff;
+        }
+
+        button.primary {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #121212;
+            font-weight: 600;
+        }
+
+        button.primary:hover {
+            background: var(--primary-hover);
+        }
+
+        button.danger {
+            border-color: var(--border);
+            color: var(--danger);
+        }
+
+        button.danger:hover {
+            background: rgba(239, 83, 80, 0.1);
+            border-color: var(--danger);
+        }
+
+        /* Table Area - Scrollable with sticky header */
+        .table-wrapper {
+            flex: 1;
+            /* Take remaining space */
+            overflow: hidden;
+            /* Container for scroll */
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-panel);
+        }
+
+        .table-scroll {
+            overflow: auto;
+            flex: 1;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        th {
+            position: sticky;
+            top: 0;
+            background: var(--bg-card);
+            z-index: 10;
+            padding: 12px 15px;
+            text-align: left;
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            vertical-align: top;
+            /* Better for wrapping text */
+            line-height: 1.4;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        tr:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        /* Checkbox */
+        input[type="checkbox"] {
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-radius: 4px;
+            background: transparent;
+            cursor: pointer;
+            position: relative;
+        }
+
+        input[type="checkbox"]:checked {
+            background: var(--primary);
+            border-color: var(--primary);
+        }
+
+        input[type="checkbox"]:checked::after {
+            content: '✓';
+            position: absolute;
+            color: #000;
+            font-size: 10px;
+            top: 0px;
+            left: 2px;
+            font-weight: bold;
+        }
+
+        /* Badges */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-next {
+            color: #1b5e20;
+            background: #a5d6a7;
+        }
+
+        .status-loadmore {
+            color: #0d47a1;
+            background: #90caf9;
+        }
+
+        .status-pageselect {
+            color: #e65100;
+            background: #ffcc80;
+        }
+
+        .status-scrolldown {
+            color: #b71c1c;
+            background: #ef9a9a;
+        }
+
+        .status-empty {
+            color: #666;
+            background: #222;
+            border: 1px solid #333;
+        }
+
+        .status-mismatch {
+            background: rgba(239, 83, 80, 0.2);
+            color: var(--danger);
+            border: 1px solid var(--danger);
+        }
+
+        .status-match {
+            background: rgba(102, 187, 106, 0.2);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        /* Links */
+        a {
+            color: var(--primary);
+            text-decoration: none;
+            transition: color 0.15s;
+            word-break: break-all;
+            /* Ensure wrapping */
+        }
+
+        a:hover {
+            color: var(--primary-hover);
+            text-decoration: underline;
+        }
+
+        /* Logs */
+        .log-panel {
+            margin-top: 20px;
+            height: 150px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .log-header {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .log-box {
+            flex: 1;
+            background: #0f0f0f;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            color: #ccc;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+
+        /* Loading Bar */
+        #progress-bar {
+            height: 2px;
+            background: var(--primary);
+            width: 0%;
+            transition: width 0.3s;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-body);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        .editable {
+            cursor: pointer;
+            border-bottom: 1px dashed #555;
+        }
+
+        .editable:hover {
+            border-bottom-color: #888;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="progress-bar"></div>
+
+    <div class="container">
+        <h1>AGI <span>Pagination Classifier</span></h1>
+
+        <!-- Toolbar -->
+        <div class="controls glass-panel">
+            <div style="margin-right: 15px; display:flex; align-items:center; gap:8px;">
+                <input type="checkbox" id="master-checkbox" onclick="toggleSelectAll()">
+                <label for="master-checkbox" style="cursor:pointer; font-size:0.9rem; color:var(--text-muted);">Select
+                    All</label>
+            </div>
+
+            <button onclick="runSelected()" class="primary">
+                <span>▶</span> Run Selected
+            </button>
+
+            <div style="width: 1px; height: 20px; background: var(--border); margin: 0 5px;"></div>
+
+            <button onclick="stopRun()" class="danger">Stop</button>
+            <button onclick="loadData()">Refresh Data</button>
+
+            <span id="status-text" style="margin-left: auto; color: var(--text-muted); font-size: 0.9rem;">Idle</span>
+        </div>
+
+        <!-- Table -->
+        <div class="table-wrapper">
+            <div class="table-scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th width="30"></th>
+                            <th width="50">ID</th>
+                            <th width="40%">Company URL</th>
+                            <th width="15%">Original</th>
+                            <th width="15%">Predicted</th>
+                            <th>Status</th>
+                            <th width="80" style="text-align:right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="table-body">
+                        <!-- Data -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Logs -->
+        <div class="log-panel">
+            <div class="log-header">
+                <span>Terminal Logs</span>
+                <button onclick="clearLogs()"
+                    style="padding:2px 8px; font-size:10px; background: #222; border:1px solid #333;">Clear</button>
+            </div>
+            <div id="log-box" class="log-box">Waiting for command...</div>
+        </div>
+    </div>
+
+    <script>
+        let allData = [];
+        let isRunning = false;
+        let pollInterval = null;
+
+        async function loadData() {
+            const res = await fetch('/api/data');
+            allData = await res.json();
+            renderTable();
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = '';
+
+            allData.forEach(row => {
+                const tr = document.createElement('tr');
+
+                let bucketClass = 'status-empty';
+                if (row.bucket) bucketClass = `status-${row.bucket.toLowerCase()}`;
+
+                // Comparison Logic
+                let mismatch = false;
+                let orig = (row.original_flow || '').toLowerCase().trim();
+                let pred = (row.bucket || '').toLowerCase().trim();
+
+                if (pred && orig && orig !== 'nan' && pred !== orig) {
+                    mismatch = true;
+                }
+
+                let statusBadge = '';
+                if (mismatch) {
+                    statusBadge = '<span class="status-badge status-mismatch">MISMATCH</span>';
+                } else if (pred && orig && pred === orig) {
+                    statusBadge = '<span class="status-badge status-match">MATCH</span>';
+                }
+
+                tr.innerHTML = `
+                <td><input type="checkbox" class="row-checkbox" value="${row.url}"></td>
+                <td>${row.id}</td>
+                <td>
+                    <a href="${row.url}" target="_blank">${row.url}</a>
+                </td>
+                <td style="color:#aaa;">${row.original_flow || '-'}</td>
+                <td>
+                    <span class="status-badge ${bucketClass} editable" onclick="editBucket('${row.url}', '${row.bucket}')">
+                        ${row.bucket || 'PENDING'}
+                    </span>
+                </td>
+                <td>${statusBadge}</td>
+                <td style="text-align:right">
+                     <button style="padding: 4px 10px; font-size: 0.7rem; display:inline-flex;" onclick="runSingle('${row.url}')">Run</button>
+                </td>
+            `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function toggleSelectAll() {
+            const master = document.getElementById('master-checkbox');
+            const checkboxes = document.querySelectorAll('.row-checkbox');
+            checkboxes.forEach(cb => cb.checked = master.checked);
+        }
+
+        async function runSelected() {
+            const selected = Array.from(document.querySelectorAll('.row-checkbox:checked')).map(cb => cb.value);
+            if (selected.length === 0) return alert("Select at least one row");
+
+            startRun(selected);
+        }
+
+        async function runSingle(url) {
+            startRun([url]);
+        }
+
+        async function startRun(urls) {
+            // Optimistic UI updates could go here
+            const res = await fetch('/api/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ urls })
+            });
+
+            if (res.ok) {
+                isRunning = true;
+                document.getElementById('status-text').innerText = "Running...";
+                document.getElementById('progress-bar').style.width = "100%"; // Indeterminate
+                pollStatus();
+            } else {
+                alert("Failed to start");
+            }
+        }
+
+        async function stopRun() {
+            await fetch('/api/stop', { method: 'POST' });
+            document.getElementById('status-text').innerText = "Stopping...";
+        }
+
+        async function editBucket(url, current) {
+            const newVal = prompt("Enter new bucket (next, loadmore, pageselect, scrolldown):", current);
+            if (newVal !== null) {
+                await fetch('/api/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, bucket: newVal.toLowerCase() })
+                });
+                loadData();
+            }
+        }
+
+        function clearLogs() {
+            document.getElementById('log-box').innerText = '';
+        }
+
+        function pollStatus() {
+            if (pollInterval) clearInterval(pollInterval);
+
+            pollInterval = setInterval(async () => {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+
+                const logBox = document.getElementById('log-box');
+                logBox.innerText = data.logs.join('\n'); // Plain text for logs to avoid injection
+                logBox.scrollTop = logBox.scrollHeight;
+
+                if (!data.is_running && isRunning) {
+                    isRunning = false;
+                    document.getElementById('status-text').innerText = "Idle";
+                    document.getElementById('progress-bar').style.width = "0%";
+                    clearInterval(pollInterval);
+                    loadData();
+                }
+            }, 1000);
+        }
+
+        // Init
+        loadData();
+
+    </script>
+</body>
+
+</html>
