@@ -12,9 +12,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 import autopager
 from parsel import Selector
-import anthropic
 import os
 from dotenv import load_dotenv
+from openai import OpenAI
 
 load_dotenv()
 
@@ -37,7 +37,7 @@ global_rate_limiter = RateLimiter(requests_per_minute=5)
 class AIJudge:
     def __init__(self, api_key):
         self.api_key = api_key
-        self.client = anthropic.Anthropic(api_key=api_key) if api_key else None
+        self.client = OpenAI(api_key=api_key) if api_key else None
 
     def ask(self, url, detected_signals, page_snippet, branch='structural'):
         """Ask AI to judge between constrained choices based on branch.
@@ -110,12 +110,13 @@ Return ONLY: scrolldown OR none"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                response = self.client.messages.create(
-                    model="claude-3-haiku-20240307",
+                response = self.client.chat.completions.create(
+                    model="gpt-3.5-turbo",
                     max_tokens=10,
+                    temperature=0,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                result = response.content[0].text.strip().lower()
+                result = response.choices[0].message.content.strip().lower()
                 # Validate response is one of the valid choices
                 if result in valid_choices:
                     return result
@@ -131,14 +132,78 @@ Return ONLY: scrolldown OR none"""
                 print(f"AI Judge Error: {e}")
                 return None
         return None
+    
+    def fallback_classify(self, url):
+        """
+        When the page fails to load completely, use AI to make a best guess
+        based only on the URL and common patterns.
+        """
+        if not self.client:
+            return None, "No API key available"
+        
+        # Centralized rate limit wait
+        global_rate_limiter.wait()
+        
+        prompt = f"""URL: {url}
+
+This is a careers/jobs page URL that failed to load completely. Based on the URL pattern and common practices, classify the pagination type.
+
+TASK: Choose ONE of these pagination types:
+- **next**: "Next" button or arrow to go to the next page (most common for career pages)
+- **pageselect**: Numbered page links (1, 2, 3...) for direct page selection
+- **loadmore**: "Load More" or "Show More" button that loads content without navigation
+- **scrolldown**: Infinite scroll where content loads automatically when scrolling
+- **none**: Single page with no pagination (small companies, few jobs)
+
+GUIDELINES:
+- Career/job pages usually use "next" buttons (50-60% of cases)
+- If URL has ?page=, &p=, /page/ → likely "next" or "pageselect"
+- Modern sites with /careers/ or /jobs/ often use "loadmore" (20-30%)
+- If company seems small (consulting, regional) → likely "none"
+- Enterprise ATS (greenhouse.io, lever.co, workday) → usually "next"
+
+Return ONLY the pagination type (next/pageselect/loadmore/scrolldown/none) and a brief reason in this format:
+TYPE | Reason in 5-10 words
+
+Example: next | Typical career page pattern with pagination"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                max_tokens=50,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            result = response.choices[0].message.content.strip()
+            
+            # Parse response: "TYPE | Reason"
+            if '|' in result:
+                bucket, reason = result.split('|', 1)
+                bucket = bucket.strip().lower()
+                reason = reason.strip()
+            else:
+                bucket = result.strip().lower()
+                reason = "AI fallback classification"
+            
+            # Validate bucket
+            valid_buckets = ['next', 'pageselect', 'loadmore', 'scrolldown', 'none']
+            if bucket in valid_buckets:
+                return bucket.upper(), f"AI Judge (fallback): {reason}"
+            else:
+                return 'NEXT', f"AI Judge fallback: {result} (defaulted to NEXT)"
+                
+        except Exception as e:
+            print(f"  AI Judge Fallback Error: {e}")
+            return None, f"AI Judge error: {str(e)[:50]}"
 
 class PaginationClassifier:
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, headless=True):
         self.api_key = api_key
         self.ai_judge = AIJudge(api_key)
         import os
         chrome_options = Options()
-        chrome_options.add_argument("--headless")  # Run headless for efficiency
+        if headless:
+            chrome_options.add_argument("--headless")  # Run headless for efficiency
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--window-size=1920,1080")
@@ -172,36 +237,49 @@ class PaginationClassifier:
         self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2) # Wait for potential load
 
-    def classify_url(self, url):
+    def classify_url(self, url, print_callback=None):
         try:
-            print(f"\nProcessing: {url}")
-            # Robust loading with retry
-            max_retries = 2
+            # Robust loading with retry - progressive wait times
+            max_retries = 3
+            wait_times = [3, 5, 7]  # Progressive wait: 3s -> 5s -> 7s
+            timeout_limits = [10, 15, 20]  # Progressive timeout: 10s -> 15s -> 20s
+            
             for attempt in range(max_retries):
                 try:
+                    # Set progressive page load timeout for each attempt
+                    self.driver.set_page_load_timeout(timeout_limits[attempt])
+                    
                     self.driver.get(url)
-                    time.sleep(3) # Initial load wait
-                    # Warm-up scroll to trigger lazy elements (e.g. Intense Interactive/Vestas)
+                    wait_time = wait_times[attempt]
+                    if print_callback:
+                        print_callback(f"  ⏳ Waiting {wait_time} sec for {url} to get stabilize... (Attempt {attempt+1}/{max_retries})")
+                    time.sleep(wait_time) # Progressive wait - let page stabilize
+                    # Warm-up scroll to trigger lazy elements
                     self.driver.execute_script("window.scrollBy(0, 500);")
-                    time.sleep(2)
-                    # Extra wait as per user feedback (Amagi and general slow loads)
-                    print("  Waiting 3s for page stabilization...")
-                    time.sleep(3)
+                    time.sleep(1)
                     break
                 except TimeoutException:
                     if attempt == max_retries - 1: raise
-                    print(f"  Timeout loading {url}, retrying...")
-                    time.sleep(5)
+                    print(f"  ⚠️  Timeout loading {url}, retrying with longer wait...")
+                    time.sleep(3)
         except Exception as e:
             # Fallback for Suprabha-style hangs: Stop loading and proceed anyway
             try:
                 msg = str(e).lower()
-                if "timeout" in msg:
-                    self.driver.execute_script("window.stop();")
-                    print(f"  Warning: Loading reached timeout, stopped and proceeding.")
-                    # We don't return error here, we proceed with whatever DOM we have
+                if "timeout" in msg or "timed out" in msg:
+                    try:
+                        self.driver.execute_script("window.stop();")
+                        print(f"  ⚠️  Warning: Timeout occurred, stopped loading and proceeding with partial page...")
+                        # We don't return error here, we proceed with whatever DOM we have
+                    except:
+                        # If stop() fails, try to restart the driver
+                        print(f"  ⚠️  Critical timeout - attempting to recover...")
+                        return "error: timeout", f"Error: {e}"
                 elif "dns_probe_finished_nxdomain" in msg or "unknown_error" in msg:
                     return "error: invalid_url", f"Error: {e}"
+                elif "receiving message" in msg or "renderer" in msg:
+                    print(f"  ⚠️  Renderer timeout - attempting recovery with partial page...")
+                    # Try to proceed with whatever we have
                 else:
                     return "error: page_load_failed", f"Error: {e}"
             except:
@@ -529,6 +607,16 @@ class PaginationClassifier:
         detected_signals.append("Fallback: No structural or behavioral confirmation → defaulting to 'default'")
         print(f"  Signals: {'; '.join(detected_signals)}")
         return decision, f"Final decision: {decision}. Signals: {detected_signals}"
+    
+    def use_ai_judge_fallback(self, url):
+        """
+        Public method to call AI Judge when page loading fails.
+        Returns (bucket, reason) tuple.
+        """
+        if not self.api_key:
+            return None, "No API key for AI Judge"
+        
+        return self.ai_judge.fallback_classify(url)
 
 # Lock for synchronized terminal printing and CSV writing
 print_lock = threading.Lock()
