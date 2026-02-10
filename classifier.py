@@ -591,7 +591,7 @@ class PaginationClassifier:
         
         # ============================================================
         # BRANCH 2: BEHAVIORAL (Autopager detected NO paginator)
-        # Order: Scrolldown → LoadMore → AI Judge → Fallback to 'scrolldown'
+        # Order: Scrolldown → LoadMore → AI Judge → Fallback to 'next'
         # ============================================================
         detected_signals.append("Branch: BEHAVIORAL (Autopager NO paginator)")
         
