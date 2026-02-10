@@ -42,15 +42,14 @@ This tool analyzes career/job listing pages and automatically determines their p
 
 ## 🪣 Pagination Buckets
 
-The classifier categorizes pages into **4 primary buckets** + **1 fallback**:
+The classifier categorizes pages into **4 buckets** with pipeline-aware fallbacks:
 
 | Bucket | Description | Example Elements | Common In |
 |--------|-------------|------------------|-----------|
-| **NEXT** | Sequential navigation with Next button/arrow | `Next →`, `→`, `Next Page` | Traditional career pages, ATS systems |
-| **PAGESELECT** | Direct page number selection | `1 2 3 4 ... Last`, `« 1 2 3 »` | Government sites, large job boards |
+| **NEXT** | Sequential navigation with Next/Previous button or single arrow (takes priority if both present) | `Next`, `Previous`, `>`, `<`, `→`, `←`, `›`, `‹` | Traditional career pages, ATS systems (default for structural path) |
+| **PAGESELECT** | Direct page number selection & jump buttons | `1 2 3 4`, `First`, `Last`, `»`, `>>`, `«`, `<<` | Government sites, large job boards |
 | **LOADMORE** | Button to load more content | `Load More`, `Show More`, `View All` | Modern web apps, startups |
-| **SCROLLDOWN** | Infinite scroll (automatic loading) | No button, content loads on scroll | Social platforms, modern sites |
-| **NONE** | Single page, no pagination | Small companies, few positions | Small companies |
+| **SCROLLDOWN** | Infinite scroll (automatic loading) | No button, content loads on scroll | Social platforms, modern sites (default for behavioral path) |
 
 ---
 
@@ -222,7 +221,7 @@ INPUT: CSV File (URLs)
         └────────┬───────────┘
                  │
                  ↓
-         Return: LOADMORE, SCROLLDOWN, or NEXT (fallback)
+         Return: LOADMORE or SCROLLDOWN (behavioral fallback: scrolldown)
 
 ╔═════════════════════════════════════════════════════════════════════════╗
 ║                      RESULT PROCESSING & SAVING                          ║
@@ -360,8 +359,8 @@ python app.py [OPTIONS]
 | `--input` | `-i` | String | `test.csv` | Input CSV file containing URLs |
 | `--output` | `-o` | String | `output.csv` | Output CSV file for results |
 | `--workers` | `-w` | Integer | `1` | Number of parallel workers (1-10 recommended) |
-| `--headless` | - | Flag | `False` | Run browser in headless mode (no window) |
-| `--no-headless` | - | Flag | - | Show browser window (default behavior) |
+| `--headless` | - | Flag | `True` | Run browser in headless mode (default) |
+| `--no-headless` | - | Flag | - | Show browser window (for debugging) |
 | `--api-key` | - | String | `None` | OpenAI API key for AI Judge |
 
 ### Examples
@@ -392,13 +391,21 @@ URL → Load Page → Wait for Stabilization → Extract DOM
 Autopager Detection
     ↓
     ├─→ Links Found? → STRUCTURAL PATH
-    │                  ├─→ Next button? → NEXT
-    │                  └─→ Page numbers? → PAGESELECT
+    │                  ├─→ Next button/single arrow (>, →)? → NEXT (priority)
+    │                  ├─→ Page numbers/First/Last/double arrows (», >>)? → PAGESELECT
+    │                  ├─→ Ambiguous? → AI Judge (if available)
+    │                  └─→ Fallback → NEXT (structural default)
     │
     └─→ No Links? → BEHAVIORAL PATH
                    ├─→ Scroll increases height? → SCROLLDOWN
-                   └─→ Load More button? → LOADMORE
+                   ├─→ Load More button? → LOADMORE
+                   ├─→ Ambiguous? → AI Judge (if available)
+                   └─→ Fallback → SCROLLDOWN (behavioral default)
 ```
+
+**Pipeline-Aware Fallbacks:**
+- **STRUCTURAL PATH** (links found): Defaults to `NEXT` when uncertain
+- **BEHAVIORAL PATH** (no links): Defaults to `SCROLLDOWN` when uncertain
 
 ### Progressive Retry Strategy
 

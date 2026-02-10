@@ -76,13 +76,14 @@ Return ONLY: next OR pageselect"""
 Signals detected so far: {"; ".join(detected_signals)}
 
 TASK: This page HAS pagination elements. Your job is to decide between EXACTLY TWO options:
-- **next**: A "Next" button, arrow (>, →), or link to go to the next page sequentially.
-- **pageselect**: Numbered page links (1, 2, 3...) or jump buttons (», Last) allowing direct page selection.
+- **next**: A "Next"/"Previous" button or single arrow (>, →, ›, ‹, ←) to go to the next/previous page sequentially.
+- **pageselect**: Numbered page links (1, 2, 3...) or jump buttons (First, Last, », >>, «, <<) allowing direct page selection.
 
 RULES:
-- If you see any ">" arrow, textual "Next", or chevron → next (next takes priority)
-- If you see ONLY numbered page links (1, 2, 3) without any "Next" arrows → pageselect
-- If you see << or >> and they act as sequential/last page buttons → next
+- Single arrows (>, →, ›, ‹, ←) or "Next"/"Previous" text → next
+- Double arrows (», >>, «, <<) or First/Last → pageselect
+- If you see BOTH next AND pageselect elements → prefer next (NEXT TAKES PRIORITY)
+- Numbered links (1, 2, 3) without arrows → pageselect
 - IGNORE "Read More" buttons that link to individual articles.
 
 HTML Snippet:
@@ -94,18 +95,20 @@ Return ONLY: next OR pageselect"""
             prompt = f"""Address: {url}
 Signals detected so far: {"; ".join(detected_signals)}
 
-TASK: This page has NO traditional pagination buttons. Your job is to verify if it qualifies as **scrolldown**.
-- **scrolldown**: Content loads AUTOMATICALLY when scrolling down (infinite scroll).
+TASK: This page has NO traditional pagination links. Your job is to decide between EXACTLY TWO options:
+- **loadmore**: A button that says "Load More", "Show More", "View More", "Show All" that loads content WITHOUT navigating.
+- **scrolldown**: Content loads AUTOMATICALLY when scrolling down (infinite scroll), no button click needed.
 
 RULES:
+- If there's a visible button to load more content → loadmore
 - If content appears automatically as you scroll → scrolldown
-- If the page has very few items and no interaction, return 'none'
+- If uncertain, default to scrolldown
 
 HTML Snippet:
 {page_snippet[:3000]}
 
-Return ONLY: scrolldown OR none"""
-            valid_choices = ['scrolldown', 'none']
+Return ONLY: loadmore OR scrolldown"""
+            valid_choices = ['loadmore', 'scrolldown']
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -153,16 +156,15 @@ TASK: Choose ONE of these pagination types:
 - **pageselect**: Numbered page links (1, 2, 3...) for direct page selection
 - **loadmore**: "Load More" or "Show More" button that loads content without navigation
 - **scrolldown**: Infinite scroll where content loads automatically when scrolling
-- **none**: Single page with no pagination (small companies, few jobs)
 
 GUIDELINES:
 - Career/job pages usually use "next" buttons (50-60% of cases)
 - If URL has ?page=, &p=, /page/ → likely "next" or "pageselect"
 - Modern sites with /careers/ or /jobs/ often use "loadmore" (20-30%)
-- If company seems small (consulting, regional) → likely "none"
 - Enterprise ATS (greenhouse.io, lever.co, workday) → usually "next"
+- If uncertain, prefer "next" for most career pages
 
-Return ONLY the pagination type (next/pageselect/loadmore/scrolldown/none) and a brief reason in this format:
+Return ONLY the pagination type (next/pageselect/loadmore/scrolldown) and a brief reason in this format:
 TYPE | Reason in 5-10 words
 
 Example: next | Typical career page pattern with pagination"""
@@ -186,7 +188,7 @@ Example: next | Typical career page pattern with pagination"""
                 reason = "AI fallback classification"
             
             # Validate bucket
-            valid_buckets = ['next', 'pageselect', 'loadmore', 'scrolldown', 'none']
+            valid_buckets = ['next', 'pageselect', 'loadmore', 'scrolldown']
             if bucket in valid_buckets:
                 return bucket.upper(), f"AI Judge (fallback): {reason}"
             else:
@@ -332,16 +334,11 @@ class PaginationClassifier:
                         signals.append(f"Autopager: Found PAGE link '{text}'")
                         structural_evidence_found = True
                     elif link_type == 'NEXT':
-                        # If it contains >> or » it's usually pageselect jump
-                        if '>>' in text or '»' in text:
-                            indicators['pageselect'] = True
-                            signals.append(f"Autopager: Found PAGESELECT jump link '{text}'")
-                            structural_evidence_found = True
-                        else:
-                            indicators['next'] = True
-                            found_next_symbol = True
-                            signals.append(f"Autopager: Found NEXT link '{text}'")
-                            structural_evidence_found = True
+                        # Mark as NEXT - takes priority over pageselect
+                        indicators['next'] = True
+                        found_next_symbol = True
+                        signals.append(f"Autopager: Found NEXT link '{text}'")
+                        structural_evidence_found = True
                 except: continue
 
             # 1.2 Keyword Search (Next/Arrow)
@@ -415,9 +412,9 @@ class PaginationClassifier:
                     signals.append(f"Paginator Wall: Found range pattern (Page x of y)")
                     structural_evidence_found = True
                 
-                # 1.3.1 NEXT priority symbols ( > , → , » )
-                # Per Case 1, 2, 3, 5: arrows/chevrons imply 'next'
-                next_symbols = ['>', '→', '›', '➜', '»', '>>']
+                # 1.3.1 NEXT symbols (single arrows only - forward and backward)
+                # Single arrows indicate sequential navigation (next/previous page)
+                next_symbols = ['>', '→', '›', '‹', '←', '➜']
                 for sym in next_symbols:
                     xpath = f"//*[(self::a or self::button or self::span) and (text()='{sym}' or contains(., '{sym}') or contains(@aria-label, '{sym}'))]"
                     try:
@@ -433,11 +430,39 @@ class PaginationClassifier:
                         if indicators['next']: break
                     except: continue
 
-                # 1.3.2 PAGESELECT symbols (Pure numbers, or jump symbols IF no next symbols)
-                if not indicators['next']:
-                    pageselect_symbols = ['«', '<<'] # These are usually back/first, if alone usually pageselect
-                    # Also numbered buttons (Case 1 for pageselect)
-                    # We already check for PAGE links via autopager above.
+                # 1.3.2 PAGESELECT keywords and symbols (checked AFTER next symbols)
+                # Keywords: First, Last
+                # Symbols: », >>, «, << (double arrows/jump buttons)
+                if not indicators['pageselect']:
+                    pageselect_keywords = ['first', 'last']
+                    for keyword in pageselect_keywords:
+                        xpath = f"//*[(self::a or self::button or self::span) and (contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}'))]"
+                        try:
+                            elements = driver_instance.find_elements(By.XPATH, xpath)
+                            for e in elements:
+                                if e.is_displayed():
+                                    indicators['pageselect'] = True
+                                    signals.append(f"Heuristic: Found PAGESELECT keyword '{keyword}'")
+                                    structural_evidence_found = True
+                                    break
+                            if indicators['pageselect']: break
+                        except: continue
+                    
+                    # PAGESELECT symbols (double arrows and jump buttons - backward and forward)
+                    if not indicators['pageselect']:
+                        pageselect_symbols = ['»', '>>', '«', '<<']
+                        for sym in pageselect_symbols:
+                            xpath = f"//*[(self::a or self::button or self::span) and (text()='{sym}' or contains(., '{sym}'))]"
+                            try:
+                                elements = driver_instance.find_elements(By.XPATH, xpath)
+                                for e in elements:
+                                    if e.is_displayed():
+                                        indicators['pageselect'] = True
+                                        signals.append(f"Heuristic: Found PAGESELECT symbol '{sym}'")
+                                        structural_evidence_found = True
+                                        break
+                                if indicators['pageselect']: break
+                            except: continue
 
                 # 1.3.2 Numbered Button Groups (Hatch/Numbered Pagination)
                 # Look for contiguous numbers 1, 2 in small area or siblings
@@ -547,15 +572,25 @@ class PaginationClassifier:
                 print(f"  Signals: {'; '.join(detected_signals)}")
                 return decision, f"Final decision: {decision}. Signals: {detected_signals}"
             
-            # --- Step 3: Fallback to DEFAULT ---
-            decision = 'default'
-            detected_signals.append("Structural Fallback: Paginator detected by Autopager but no specific rules matched → 'default'")
+            # --- Step 3: Ambiguous - Try AI Judge if available ---
+            detected_signals.append("Structural: Ambiguous signals, consulting AI Judge...")
+            if self.api_key:
+                page_snippet = get_page_snippet(self.driver)
+                ai_decision = self.ai_judge.ask(url, detected_signals, page_snippet, branch='structural')
+                if ai_decision and ai_decision in ['next', 'pageselect']:
+                    detected_signals.append(f"AI Judge decided: {ai_decision}")
+                    print(f"  Signals: {'; '.join(detected_signals)}")
+                    return ai_decision, f"Final decision: {ai_decision}. Signals: {detected_signals}"
+            
+            # --- Step 4: Fallback to NEXT (STRUCTURAL PATH default) ---
+            decision = 'next'
+            detected_signals.append("Structural Fallback: Paginator detected but ambiguous → defaulting to 'next'")
             print(f"  Signals: {'; '.join(detected_signals)}")
             return decision, f"Final decision: {decision}. Signals: {detected_signals}"
         
         # ============================================================
         # BRANCH 2: BEHAVIORAL (Autopager detected NO paginator)
-        # Order: Scrolldown → Fallback to 'default'
+        # Order: Scrolldown → LoadMore → AI Judge → Fallback to 'scrolldown'
         # ============================================================
         detected_signals.append("Branch: BEHAVIORAL (Autopager NO paginator)")
         
@@ -586,8 +621,8 @@ class PaginationClassifier:
             return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
         
         # Second Scroll Attempt (Longer wait)
-        detected_signals.append("Scroll attempt 1: No growth or URL changed. Waiting 5s for retry...")
-        time.sleep(5) # Per USER: wait for 3 -5 sec more
+        detected_signals.append("Scroll attempt 1: No growth. Waiting 5s for retry...")
+        time.sleep(5) # Per USER: wait for 3-5 sec more
         self.scroll_to_bottom()
         time.sleep(2)
         
@@ -600,11 +635,80 @@ class PaginationClassifier:
             print(f"  Signals: {'; '.join(detected_signals)}")
             return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
         else:
-            detected_signals.append("Scroll attempt 2: Still no valid scrolldown growth.")
+            detected_signals.append("Scroll attempt 2: Still no scrolldown growth.")
         
-        # --- Final Fallback: No scrolldown growth → Default to 'default' ---
-        decision = 'default'
-        detected_signals.append("Fallback: No structural or behavioral confirmation → defaulting to 'default'")
+        # --- Step 2: LoadMore Button Detection ---
+        detected_signals.append("Behavioral: Scrolldown failed, testing LoadMore button...")
+        loadmore_button = None
+        
+        # Common LoadMore button patterns
+        loadmore_keywords = [
+            "load more", "show more", "view more", "see more", "load all",
+            "show all", "view all", "see all", "more jobs", "more results",
+            "load additional", "show additional"
+        ]
+        
+        try:
+            # Search for buttons with LoadMore keywords
+            for keyword in loadmore_keywords:
+                # Try button tags
+                buttons = self.driver.find_elements(By.XPATH, 
+                    f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')]")
+                if buttons and buttons[0].is_displayed():
+                    loadmore_button = buttons[0]
+                    detected_signals.append(f"LoadMore button found: '{keyword}'")
+                    break
+                
+                # Try links/anchors
+                if not loadmore_button:
+                    links = self.driver.find_elements(By.XPATH, 
+                        f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')]")
+                    if links and links[0].is_displayed():
+                        loadmore_button = links[0]
+                        detected_signals.append(f"LoadMore link found: '{keyword}'")
+                        break
+            
+            # If LoadMore button found, verify it's clickable
+            if loadmore_button:
+                try:
+                    # Record state before click
+                    before_height = self.get_page_height()
+                    before_elements = len(self.driver.find_elements(By.XPATH, "//*"))
+                    
+                    # Click the button
+                    loadmore_button.click()
+                    time.sleep(3)  # Wait for content to load
+                    
+                    # Check if content increased
+                    after_height = self.get_page_height()
+                    after_elements = len(self.driver.find_elements(By.XPATH, "//*"))
+                    
+                    if after_height > before_height + 200 or after_elements > before_elements + 5:
+                        detected_signals.append("Behavioral: LoadMore CONFIRMED (content increased after click)")
+                        print(f"  Signals: {'; '.join(detected_signals)}")
+                        return 'loadmore', f"Final decision: loadmore. Signals: {detected_signals}"
+                    else:
+                        detected_signals.append("LoadMore button clicked but no content increase detected")
+                except Exception as e:
+                    detected_signals.append(f"LoadMore button found but click failed: {str(e)[:50]}")
+            else:
+                detected_signals.append("Behavioral: No LoadMore button found")
+        except Exception as e:
+            detected_signals.append(f"LoadMore detection error: {str(e)[:50]}")
+        
+        # --- Step 3: AI Judge (if ambiguous) ---
+        detected_signals.append("Behavioral: Ambiguous, consulting AI Judge...")
+        if self.api_key:
+            page_snippet = get_page_snippet(self.driver)
+            ai_decision = self.ai_judge.ask(url, detected_signals, page_snippet, branch='behavioral')
+            if ai_decision and ai_decision in ['loadmore', 'scrolldown']:
+                detected_signals.append(f"AI Judge decided: {ai_decision}")
+                print(f"  Signals: {'; '.join(detected_signals)}")
+                return ai_decision, f"Final decision: {ai_decision}. Signals: {detected_signals}"
+        
+        # --- Step 4: Fallback to SCROLLDOWN (BEHAVIORAL PATH default) ---
+        decision = 'scrolldown'
+        detected_signals.append("Behavioral Fallback: No scrolldown, no loadmore button → defaulting to 'scrolldown'")
         print(f"  Signals: {'; '.join(detected_signals)}")
         return decision, f"Final decision: {decision}. Signals: {detected_signals}"
     
