@@ -17,17 +17,17 @@ self.driver.set_page_load_timeout(30)  # Fixed 30 second timeout
 
 **After optimization:**
 ```python
-timeout_limits = [10, 15, 20]  # Progressive: 10s -> 15s -> 20s
+timeout_limits = [30, 45, 60]  # Progressive: 30s -> 45s -> 60s
 for attempt in range(max_retries):
     self.driver.set_page_load_timeout(timeout_limits[attempt])
     # ... attempt to load page
 ```
 
 **Benefits:**
-- ✅ Fast failure on first attempt (10s instead of 30s)
-- ✅ Progressively more patient (15s, then 20s)
-- ✅ Maximum timeout only 69s vs 90s+ (23% faster!)
-- ✅ Most URLs fail fast if they're going to fail
+- ✅ Generous timeout on first attempt (30s for slow sites)
+- ✅ Progressively more patient (45s, then 60s)
+- ✅ Maximum timeout ~160s for very slow sites
+- ✅ Handles slow-loading career pages and heavy WordPress sites
 
 ## Progressive Timeout Strategy
 
@@ -36,35 +36,35 @@ for attempt in range(max_retries):
 │           Progressive Timeout Implementation                 │
 └─────────────────────────────────────────────────────────────┘
 
-ATTEMPT 1: Quick Try (10 second timeout)
+ATTEMPT 1: Generous Try (30 second timeout)
     │
-    ├─ Set timeout: 10 seconds
-    ├─ Try: driver.get(url)
-    │
-    ├─ SUCCESS? ──YES──→ Wait 3s → Scroll → Continue ✅
-    │                    (Total: 4-10s)
-    │
-    └─ TIMEOUT? ──YES──→ Retry delay 3s
-                         (Total: 10s + 3s = 13s)
-                         ↓
-ATTEMPT 2: Patient Try (15 second timeout)
-    │
-    ├─ Set timeout: 15 seconds
+    ├─ Set timeout: 30 seconds
     ├─ Try: driver.get(url)
     │
     ├─ SUCCESS? ──YES──→ Wait 5s → Scroll → Continue ✅
-    │                    (Total: 13s + 6-15s = 19-28s)
+    │                    (Total: 6-30s)
     │
-    └─ TIMEOUT? ──YES──→ Retry delay 3s
-                         (Total: 28s + 3s = 31s)
+    └─ TIMEOUT? ──YES──→ Retry delay 5s
+                         (Total: 30s + 5s = 35s)
                          ↓
-ATTEMPT 3: Very Patient (20 second timeout)
+ATTEMPT 2: Patient Try (45 second timeout)
     │
-    ├─ Set timeout: 20 seconds
+    ├─ Set timeout: 45 seconds
     ├─ Try: driver.get(url)
     │
     ├─ SUCCESS? ──YES──→ Wait 7s → Scroll → Continue ✅
-    │                    (Total: 31s + 8-20s = 39-51s)
+    │                    (Total: 35s + 8-45s = 43-80s)
+    │
+    └─ TIMEOUT? ──YES──→ Retry delay 5s
+                         (Total: 80s + 5s = 85s)
+                         ↓
+ATTEMPT 3: Very Patient (60 second timeout)
+    │
+    ├─ Set timeout: 60 seconds
+    ├─ Try: driver.get(url)
+    │
+    ├─ SUCCESS? ──YES──→ Wait 10s → Scroll → Continue ✅
+    │                    (Total: 85s + 11-60s = 96-145s)
     │
     └─ TIMEOUT? ──YES──→ AI Judge or Error ❌
                          (Total: 51s + processing)

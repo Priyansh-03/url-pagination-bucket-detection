@@ -6,26 +6,26 @@ The pagination classifier uses a **progressive wait time strategy** to handle sl
 
 ## Wait Time Progression
 
-### Attempt 1: 3 seconds (10s timeout)
-- **Purpose**: Handle normal websites (80% of cases)
-- **Page load timeout**: 10 seconds max
-- **Stabilization wait**: 3s page load + 1s scroll = **4 seconds**
-- **Maximum time**: 10s timeout + 4s wait = **14 seconds**
-- **Best for**: Fast-loading career pages, modern sites
-
-### Attempt 2: 5 seconds (15s timeout) - if Attempt 1 fails
-- **Purpose**: Handle slower websites (15% of cases)
-- **Page load timeout**: 15 seconds max
+### Attempt 1: 5 seconds (30s timeout)
+- **Purpose**: Handle normal to slow websites (80% of cases)
+- **Page load timeout**: 30 seconds max
 - **Stabilization wait**: 5s page load + 1s scroll = **6 seconds**
-- **Maximum time**: 15s timeout + 6s wait = **21 seconds**
-- **Best for**: WordPress sites, sites with moderate JS
+- **Maximum time**: 30s timeout + 6s wait = **36 seconds**
+- **Best for**: Most career pages, modern sites, WordPress sites
 
-### Attempt 3: 7 seconds (20s timeout) - if Attempt 2 fails
-- **Purpose**: Handle very slow websites (5% of cases)
-- **Page load timeout**: 20 seconds max
+### Attempt 2: 7 seconds (45s timeout) - if Attempt 1 fails
+- **Purpose**: Handle very slow websites (15% of cases)
+- **Page load timeout**: 45 seconds max
 - **Stabilization wait**: 7s page load + 1s scroll = **8 seconds**
-- **Maximum time**: 20s timeout + 8s wait = **28 seconds**
-- **Best for**: Heavy WordPress/Divi themes, slow servers, JavaScript-heavy sites
+- **Maximum time**: 45s timeout + 8s wait = **53 seconds**
+- **Best for**: Heavy WordPress sites, sites with lots of JS/assets
+
+### Attempt 3: 10 seconds (60s timeout) - if Attempt 2 fails
+- **Purpose**: Handle extremely slow websites (5% of cases)
+- **Page load timeout**: 60 seconds max
+- **Stabilization wait**: 10s page load + 1s scroll = **11 seconds**
+- **Maximum time**: 60s timeout + 11s wait = **71 seconds**
+- **Best for**: Heavy Divi themes, slow servers, JavaScript-heavy sites, sites with many redirects
 
 ## Detailed Flow
 
@@ -37,9 +37,9 @@ The pagination classifier uses a **progressive wait time strategy** to handle sl
 Start Processing URL
         ↓
 ┌────────────────────────┐
-│   ATTEMPT 1 (3s)       │
+│   ATTEMPT 1 (5s)       │
 │   driver.get(url)      │
-│   Wait 3 seconds       │  ← Fast sites succeed here (80%)
+│   Wait 5 seconds       │  ← Most sites succeed here (80%)
 │   Scroll 500px         │
 │   Wait 1 second        │
 └───────┬────────────────┘
@@ -48,12 +48,12 @@ Start Processing URL
         │
        NO (Timeout/Error)
         ↓
-   Wait 3 seconds
+   Wait 5 seconds
         ↓
 ┌────────────────────────┐
-│   ATTEMPT 2 (5s)       │
+│   ATTEMPT 2 (7s)       │
 │   driver.get(url)      │
-│   Wait 5 seconds       │  ← Slower sites succeed here (15%)
+│   Wait 7 seconds       │  ← Slower sites succeed here (15%)
 │   Scroll 500px         │
 │   Wait 1 second        │
 └───────┬────────────────┘
@@ -62,12 +62,12 @@ Start Processing URL
         │
        NO (Timeout/Error)
         ↓
-   Wait 3 seconds
+   Wait 5 seconds
         ↓
 ┌────────────────────────┐
-│   ATTEMPT 3 (7s)       │
+│   ATTEMPT 3 (10s)      │
 │   driver.get(url)      │
-│   Wait 7 seconds       │  ← Very slow sites succeed here (4%)
+│   Wait 10 seconds      │  ← Very slow sites succeed here (5%)
 │   Scroll 500px         │
 │   Wait 1 second        │
 └───────┬────────────────┘

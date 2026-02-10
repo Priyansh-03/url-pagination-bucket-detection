@@ -11,59 +11,71 @@ print_lock = threading.Lock()
 file_lock = threading.Lock()
 
 def find_url_column(df):
-    """Find the URL column in the dataframe"""
+    """Find the URL column in the dataframe, ignoring 'flow' column"""
     possible_cols = ['companyUrl', 'url', 'link', 'Website', 'career_page_url', 'Website URL']
+    
+    # Columns to ignore when searching for URL column
+    ignore_cols = ['flow', 'bucket', 'reason']
     
     # Try exact match
     for col in possible_cols:
-        if col in df.columns:
+        if col in df.columns and col not in ignore_cols:
             return col
     
     # Try case-insensitive match
     for col in df.columns:
-        if col.lower() in [c.lower() for c in possible_cols]:
+        if col.lower() in [c.lower() for c in possible_cols] and col not in ignore_cols:
             return col
     
-    # Find column containing URLs
+    # Find column containing URLs (but ignore flow, bucket, reason columns)
     for col in df.columns:
-        if df[col].astype(str).str.contains('http').any():
+        if col not in ignore_cols and df[col].astype(str).str.contains('http').any():
             return col
     
-    # Default to first column
+    # Default to first column (that's not in ignore list)
+    for col in df.columns:
+        if col not in ignore_cols:
+            return col
+    
+    # Absolute fallback
     return df.columns[0]
 
 def save_results_live(output_file, df_results, col_name):
-    """Save results maintaining exact row order from input"""
+    """Save results maintaining exact row order from input and preserving all columns"""
     with file_lock:
-        # Create output dataframe preserving all columns from input
+        # Create output dataframe preserving ALL columns from input
         df_out = df_results.copy()
         
         # Rename the URL column to 'companyUrl' for output if needed
         if col_name != 'companyUrl' and col_name in df_out.columns:
             df_out = df_out.rename(columns={col_name: 'companyUrl'})
         
-        # Select only companyUrl and bucket columns for output
-        if 'companyUrl' in df_out.columns and 'bucket' in df_out.columns:
-            df_out = df_out[['companyUrl', 'bucket']]
+        # Ensure bucket and reason columns exist
+        if 'bucket' not in df_out.columns:
+            df_out['bucket'] = ''
+        if 'reason' not in df_out.columns:
+            df_out['reason'] = ''
         
+        # Reorder: all input columns + bucket + reason at the end
+        cols = [c for c in df_out.columns if c not in ['bucket', 'reason']] + ['bucket', 'reason']
+        df_out = df_out[cols]
+        
+        # Keep all columns from input (companyName, companyUrl, flow, etc.) + bucket + reason
         # Save with space after comma for better readability
         df_out.to_csv(output_file, index=False, sep=',', lineterminator='\n')
         
-        # Read and reformat with space after comma
+        # Read and reformat with space after commas
         with open(output_file, 'r') as f:
             content = f.read()
         
-        # Add space after commas (but not in URLs that might have commas)
+        # Add space after commas
         lines = content.split('\n')
         formatted_lines = []
         for line in lines:
             if line.strip():
-                # Split only on first comma to preserve any commas in bucket values
-                parts = line.split(',', 1)
-                if len(parts) == 2:
-                    formatted_lines.append(f"{parts[0]}, {parts[1]}")
-                else:
-                    formatted_lines.append(line)
+                # Add space after each comma
+                formatted_line = ', '.join([part.strip() for part in line.split(',')])
+                formatted_lines.append(formatted_line)
             else:
                 formatted_lines.append(line)
         
@@ -178,9 +190,11 @@ def worker(worker_id, task_queue, df_results, output_file, col_name, total_count
                 # If still error after retries and no API key, keep the error
                 if not bucket:
                     bucket = last_error or "error: unknown"
+                    reason = "Max retries exceeded"
                 
                 # Update the exact row in the dataframe
                 df_results.at[row_index, 'bucket'] = bucket
+                df_results.at[row_index, 'reason'] = reason if reason else ""
                 
                 # Save immediately after each result
                 save_results_live(output_file, df_results, col_name)
@@ -198,6 +212,7 @@ def worker(worker_id, task_queue, df_results, output_file, col_name, total_count
                     row_index, url = task
                     # Final catch-all error
                     df_results.at[row_index, 'bucket'] = f'error: {str(e)[:50]}'
+                    df_results.at[row_index, 'reason'] = "Fatal exception during processing"
                     save_results_live(output_file, df_results, col_name)
                     
                     with print_lock:
@@ -232,15 +247,54 @@ def process_urls(input_file, output_file, num_workers=1, headless=True, api_key=
     
     # Find URL column
     col_name = find_url_column(df)
-    print(f"Using column '{col_name}' for URLs\n")
+    print(f"Using column '{col_name}' for URLs")
     
-    # Add bucket column to dataframe (initialize with NaN to preserve row order)
+    # Check if input has 'flow' column (and inform user it will be ignored)
+    if 'flow' in df.columns:
+        print(f"⚠️  Note: Input has 'flow' column - values will be preserved but NOT used as reference")
+        print(f"   → All URLs will be freshly classified\n")
+    else:
+        print()
+    
+    # Check if output file exists (checkpoint/resume functionality)
+    existing_results = {}
+    existing_reasons = {}
+    if os.path.exists(output_file):
+        try:
+            df_existing = pd.read_csv(output_file)
+            # Find URL column in existing output
+            existing_col = find_url_column(df_existing)
+            if 'bucket' in df_existing.columns:
+                for _, row in df_existing.iterrows():
+                    url = str(row[existing_col]).strip()
+                    bucket = str(row['bucket']).strip()
+                    reason = str(row.get('reason', '')).strip() if 'reason' in df_existing.columns else ''
+                    # Only count as completed if bucket is not empty/NaN/invalid
+                    if bucket and bucket.lower() not in ['nan', '', 'none']:
+                        # Normalize URL
+                        if not url.startswith('http'):
+                            url = 'https://' + url
+                        existing_results[url] = bucket
+                        existing_reasons[url] = reason if reason and reason.lower() not in ['nan', '', 'none'] else ''
+                
+                if existing_results:
+                    print(f"📂 CHECKPOINT: Found existing output file with {len(existing_results)} completed URLs")
+                    print(f"   → Resuming from where we left off...\n")
+        except Exception as e:
+            print(f"⚠️  Warning: Could not read existing output file: {e}")
+            print(f"   → Starting fresh...\n")
+    
+    # Add bucket and reason columns to dataframe (initialize with NaN to preserve row order)
+    # NOTE: If 'flow' column exists in input, it will be preserved but NOT used as reference
+    # We always run fresh classification, ignoring any pre-existing 'flow' values
     df['bucket'] = pd.NA
+    df['reason'] = pd.NA
     
     # Collect valid URLs to process (but maintain their row indices)
     # Use a set to track unique URLs and avoid duplicates in input
     seen_urls = set()
     tasks = []
+    skipped_count = 0
     
     for idx, row in df.iterrows():
         url = str(row[col_name]).strip()
@@ -248,26 +302,43 @@ def process_urls(input_file, output_file, num_workers=1, headless=True, api_key=
         if not url or url.lower() == 'nan':
             # Mark invalid rows
             df.at[idx, 'bucket'] = 'invalid_url'
+            df.at[idx, 'reason'] = 'No valid URL provided'
             continue
         
         # Ensure URL has protocol
         if not url.startswith('http'):
             url = 'https://' + url
         
+        # Check if URL already processed (checkpoint resume)
+        if url in existing_results:
+            df.at[idx, 'bucket'] = existing_results[url]
+            df.at[idx, 'reason'] = existing_reasons.get(url, '')
+            seen_urls.add(url)
+            skipped_count += 1
+            continue
+        
         # Check for duplicates in input file
         if url in seen_urls:
             df.at[idx, 'bucket'] = 'duplicate_in_input'
+            df.at[idx, 'reason'] = 'URL appears multiple times in input'
             print(f"⚠️  Warning: Duplicate URL found at row {idx+1}: {url}")
             continue
         
         seen_urls.add(url)
         tasks.append((idx, url))
     
+    if skipped_count > 0:
+        print(f"✅ Skipped {skipped_count} already processed URLs (from checkpoint)\n")
+    
     if not tasks:
-        print("ERROR: No valid URLs found in input file.")
+        if skipped_count > 0:
+            print(f"✅ All URLs already processed! Nothing to do.")
+            print(f"   Output file: {output_file}\n")
+        else:
+            print("ERROR: No valid URLs found in input file.")
         return
     
-    print(f"Found {len(tasks)} unique URLs to process\n")
+    print(f"📋 Processing {len(tasks)} remaining URLs (out of {len(df)} total)\n")
     print(f"{'='*70}\n")
     
     # Create initial output file with all rows (buckets will be filled in)

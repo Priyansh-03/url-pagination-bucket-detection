@@ -210,6 +210,21 @@ class PaginationClassifier:
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--window-size=1920,1080")
+        
+        # Additional options to prevent zombie processes and reduce CPU usage
+        chrome_options.add_argument("--disable-gpu")  # Disable GPU acceleration
+        chrome_options.add_argument("--disable-extensions")  # Disable extensions
+        chrome_options.add_argument("--disable-software-rasterizer")  # Reduce CPU usage
+        chrome_options.add_argument("--disable-background-networking")  # Prevent background requests
+        chrome_options.add_argument("--disable-default-apps")  # Disable default apps
+        chrome_options.add_argument("--disable-sync")  # Disable Chrome sync
+        chrome_options.add_argument("--disable-translate")  # Disable translate
+        chrome_options.add_argument("--metrics-recording-only")  # Reduce overhead
+        chrome_options.add_argument("--mute-audio")  # Mute audio
+        chrome_options.add_argument("--no-first-run")  # Skip first run
+        chrome_options.add_argument("--safebrowsing-disable-auto-update")  # Disable safebrowsing updates
+        chrome_options.add_argument("--disable-features=TranslateUI")  # Disable translate UI
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Hide automation
 
         driver_path = ChromeDriverManager().install()
         # Fix for webdriver-manager returning THIRD_PARTY_NOTICES or other non-executables
@@ -226,12 +241,47 @@ class PaginationClassifier:
             os.chmod(driver_path, 0o755)
                     
         chrome_options.set_capability("pageLoadStrategy", "eager") # Bypass asset timeouts (e.g. Suprabha)
-        self.driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
-        self.driver.set_page_load_timeout(30)
+        
+        # Create service with explicit cleanup
+        self.service = Service(driver_path)
+        self.driver = webdriver.Chrome(service=self.service, options=chrome_options)
+        self.driver.set_page_load_timeout(60)  # Initial timeout: 60 seconds
         self.ai_judge = AIJudge(api_key=api_key)
 
     def close(self):
-        self.driver.quit()
+        """Properly cleanup browser and driver to prevent resource leaks"""
+        try:
+            if self.driver:
+                # Close all windows first
+                try:
+                    for handle in self.driver.window_handles:
+                        self.driver.switch_to.window(handle)
+                        self.driver.close()
+                except:
+                    pass
+                
+                # Then quit the driver
+                self.driver.quit()
+        except Exception as e:
+            print(f"Warning: Error closing driver: {e}")
+        finally:
+            self.driver = None
+            
+        # Also stop the service if it exists
+        try:
+            if hasattr(self, 'service') and self.service:
+                self.service.stop()
+        except Exception as e:
+            print(f"Warning: Error stopping service: {e}")
+        finally:
+            self.service = None
+    
+    def __del__(self):
+        """Destructor to ensure cleanup even if close() is not called"""
+        try:
+            self.close()
+        except:
+            pass
 
     def get_page_height(self):
         return self.driver.execute_script("return document.body.scrollHeight")
@@ -244,8 +294,8 @@ class PaginationClassifier:
         try:
             # Robust loading with retry - progressive wait times
             max_retries = 3
-            wait_times = [3, 5, 7]  # Progressive wait: 3s -> 5s -> 7s
-            timeout_limits = [10, 15, 20]  # Progressive timeout: 10s -> 15s -> 20s
+            wait_times = [5, 7, 10]  # Progressive wait: 5s -> 7s -> 10s
+            timeout_limits = [30, 45, 60]  # Progressive timeout: 30s -> 45s -> 60s
             
             for attempt in range(max_retries):
                 try:
@@ -264,7 +314,7 @@ class PaginationClassifier:
                 except TimeoutException:
                     if attempt == max_retries - 1: raise
                     print(f"  ⚠️  Timeout loading {url}, retrying with longer wait...")
-                    time.sleep(3)
+                    time.sleep(5)  # Wait 5 seconds before retry
         except Exception as e:
             # Fallback for Suprabha-style hangs: Stop loading and proceed anyway
             try:
@@ -289,6 +339,42 @@ class PaginationClassifier:
                 return "error: driver_crashed", f"Error: {e}"
 
         detected_signals = []
+        
+        def is_truly_visible(element):
+            """Enhanced visibility check - ensures element is actually visible to users"""
+            try:
+                # Basic visibility check
+                if not element.is_displayed():
+                    return False
+                
+                # Check if element has size (not 0x0)
+                size = element.size
+                if size['width'] <= 0 or size['height'] <= 0:
+                    return False
+                
+                # Check CSS visibility and opacity
+                visibility = element.value_of_css_property('visibility')
+                opacity = element.value_of_css_property('opacity')
+                display = element.value_of_css_property('display')
+                
+                if visibility == 'hidden' or display == 'none':
+                    return False
+                
+                if opacity:
+                    try:
+                        if float(opacity) < 0.1:  # Nearly invisible
+                            return False
+                    except:
+                        pass
+                
+                # Check if element is in viewport or at least positioned on page
+                location = element.location
+                if location['x'] < -9999 or location['y'] < -9999:  # Hidden off-screen
+                    return False
+                
+                return True
+            except:
+                return False
         
         def extract_page_signals(driver_instance):
             signals = []
@@ -317,13 +403,13 @@ class PaginationClassifier:
                     text = raw_text.lower().strip()
                     href = link_selector.root.get('href') if hasattr(link_selector.root, 'get') else ""
                     
-                    # Visibility Check: Try to find the element in DOM to verify it's displayed
+                    # Enhanced Visibility Check: Verify element is truly visible to users
                     is_visible = False
                     try:
                         # Construct a unique-ish search
                         search_xpath = f"//a[@href='{href}']" if href else f"//*[contains(text(), '{text[:20]}')]"
                         elements = driver_instance.find_elements(By.XPATH, search_xpath)
-                        if any(e.is_displayed() for e in elements):
+                        if any(is_truly_visible(e) for e in elements):
                             is_visible = True
                     except: 
                         is_visible = False # Fallback to hidden if check fails
@@ -342,15 +428,15 @@ class PaginationClassifier:
                         structural_evidence_found = True
                 except: continue
 
-            # 1.2 Keyword Search (Next/Arrow)
+            # 1.2 Keyword Search (Next/Arrow) - ONLY BUTTONS AND ANCHORS
             next_visuals = ['next', 'next page', '>', '→', 'chevron_right', 'right-arrow']
             for text in next_visuals:
-                # Case insensitive search in text and aria-label
-                xpath = f"//*[(self::a or self::button or self::span) and (contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}'))]"
+                # Only search for clickable elements (buttons and anchor tags with href)
+                xpath = f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}')] | //a[@href and contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}')]"
                 try:
                     elements = driver_instance.find_elements(By.XPATH, xpath)
                     for e in elements:
-                        if e.is_displayed():
+                        if is_truly_visible(e):
                             # Filter out 'Back to top' or unrelated arrows if possible
                             if 'top' in e.text.lower(): continue
                             indicators['next'] = True
@@ -369,7 +455,7 @@ class PaginationClassifier:
             for sel in platform_next_selectors:
                 try:
                     elements = driver_instance.find_elements(By.CSS_SELECTOR, sel)
-                    if any(e.is_displayed() for e in elements):
+                    if any(is_truly_visible(e) for e in elements):
                         indicators['next'] = True
                         signals.append(f"Heuristic: Found Next via platform selector '{sel}'")
                         structural_evidence_found = True
@@ -413,35 +499,58 @@ class PaginationClassifier:
                     signals.append(f"Paginator Wall: Found range pattern (Page x of y)")
                     structural_evidence_found = True
                 
-                # 1.3.1 NEXT symbols (single arrows only - forward and backward)
-                # Single arrows indicate sequential navigation (next/previous page)
-                next_symbols = ['>', '→', '›', '‹', '←', '➜']
-                for sym in next_symbols:
-                    xpath = f"//*[(self::a or self::button or self::span) and (text()='{sym}' or contains(., '{sym}') or contains(@aria-label, '{sym}'))]"
+                # 1.3.1 NEXT keywords and symbols
+                # Keywords: next, previous, prev
+                # Symbols: Single arrows (>, →, ›, ‹, ←, ➜)
+                # ONLY search for buttons and anchor tags, NOT plain text
+                
+                # Check NEXT keywords first (next, previous, prev)
+                next_keywords = ['next', 'Next', 'NEXT']
+                for keyword in next_keywords:
+                    xpath = f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')] | //a[@href and (contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}'))]"
                     try:
                         elements = driver_instance.find_elements(By.XPATH, xpath)
                         for e in elements:
-                            if e.is_displayed():
+                            if is_truly_visible(e):
                                 # Filter out obvious non-pagination (back to top)
                                 if 'top' in e.text.lower(): continue
                                 indicators['next'] = True
-                                signals.append(f"Heuristic: Found NEXT symbol '{sym}'")
+                                signals.append(f"Heuristic: Found NEXT keyword '{keyword}'")
                                 structural_evidence_found = True
                                 break
                         if indicators['next']: break
                     except: continue
+                
+                # Check NEXT symbols if keywords not found
+                if not indicators['next']:
+                    next_symbols = ['>', '→', '›', '‹', '←', '➜']
+                    for sym in next_symbols:
+                        xpath = f"//button[text()='{sym}' or contains(., '{sym}') or contains(@aria-label, '{sym}')] | //a[@href and (text()='{sym}' or contains(., '{sym}') or contains(@aria-label, '{sym}'))]"
+                        try:
+                            elements = driver_instance.find_elements(By.XPATH, xpath)
+                            for e in elements:
+                                if is_truly_visible(e):
+                                    # Filter out obvious non-pagination (back to top)
+                                    if 'top' in e.text.lower(): continue
+                                    indicators['next'] = True
+                                    signals.append(f"Heuristic: Found NEXT symbol '{sym}'")
+                                    structural_evidence_found = True
+                                    break
+                            if indicators['next']: break
+                        except: continue
 
                 # 1.3.2 PAGESELECT keywords and symbols (checked AFTER next symbols)
                 # Keywords: First, Last
                 # Symbols: », >>, «, << (double arrows/jump buttons)
+                # ONLY search for buttons and anchor tags, NOT plain text
                 if not indicators['pageselect']:
-                    pageselect_keywords = ['first', 'last']
+                    pageselect_keywords = ['first', 'last','FIRST','LAST']
                     for keyword in pageselect_keywords:
-                        xpath = f"//*[(self::a or self::button or self::span) and (contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}'))]"
+                        xpath = f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')] | //a[@href and (contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}') or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}'))]"
                         try:
                             elements = driver_instance.find_elements(By.XPATH, xpath)
                             for e in elements:
-                                if e.is_displayed():
+                                if is_truly_visible(e):
                                     indicators['pageselect'] = True
                                     signals.append(f"Heuristic: Found PAGESELECT keyword '{keyword}'")
                                     structural_evidence_found = True
@@ -450,14 +559,15 @@ class PaginationClassifier:
                         except: continue
                     
                     # PAGESELECT symbols (double arrows and jump buttons - backward and forward)
+                    # ONLY search for buttons and anchor tags, NOT plain text
                     if not indicators['pageselect']:
                         pageselect_symbols = ['»', '>>', '«', '<<']
                         for sym in pageselect_symbols:
-                            xpath = f"//*[(self::a or self::button or self::span) and (text()='{sym}' or contains(., '{sym}'))]"
+                            xpath = f"//button[text()='{sym}' or contains(., '{sym}')] | //a[@href and (text()='{sym}' or contains(., '{sym}'))]"
                             try:
                                 elements = driver_instance.find_elements(By.XPATH, xpath)
                                 for e in elements:
-                                    if e.is_displayed():
+                                    if is_truly_visible(e):
                                         indicators['pageselect'] = True
                                         signals.append(f"Heuristic: Found PAGESELECT symbol '{sym}'")
                                         structural_evidence_found = True
@@ -472,7 +582,7 @@ class PaginationClassifier:
                     pagination_containers = driver_instance.find_elements(By.CSS_SELECTOR, "nav, ul, div, [class*='pagination'], [class*='paging'], [class*='pager'], .active, .current, [id*='page'], [class*='page']")
                     for container in pagination_containers:
                         try:
-                            if not container.is_displayed(): continue
+                            if not is_truly_visible(container): continue
                             ctext = container.text
                             # Use regex to find isolated numbers 1 and 2
                             # This catches patterns like "1 2 3" or "[ 1 ] [ 2 ]"
@@ -490,7 +600,7 @@ class PaginationClassifier:
                         # Find all dots/numbers and check their neighborhood
                         elements = driver_instance.find_elements(By.XPATH, "//*[(self::a or self::button or self::span or self::div) and (text()='1' or .='1')]")
                         for e in elements:
-                            if not e.is_displayed(): continue
+                            if not is_truly_visible(e): continue
                             # Ascend up to 2 levels to find a common container
                             curr = e
                             for _ in range(2):
@@ -590,22 +700,256 @@ class PaginationClassifier:
             return decision, f"Final decision: {decision}. Signals: {detected_signals}"
         
         # ============================================================
-        # BRANCH 2: BEHAVIORAL (Autopager detected NO paginator)
-        # Order: Scrolldown → LoadMore → AI Judge → Fallback to 'next'
+        # FALLBACK: Manual Button/Anchor Detection (when Autopager says NO)
+        # Check for pagination buttons and anchor tags that Autopager might have missed
         # ============================================================
-        detected_signals.append("Branch: BEHAVIORAL (Autopager NO paginator)")
+        detected_signals.append("Autopager found NO paginator - checking manual button/anchor detection...")
         
-        # --- Step 1: Scrolldown Verification (FIRST) ---
+        # Check for buttons with anchor tags inside or standalone anchors
+        manual_next = False
+        manual_pageselect = False
+        manual_loadmore = False
+        
+        try:
+            # --- Check 1: Buttons containing anchor tags with NEXT patterns ---
+            next_patterns = ['next', 'previous', 'prev', '>', '<', '→', '←', '›', '‹']
+            for pattern in next_patterns:
+                # Check buttons with text
+                xpath_button = f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')]"
+                buttons = self.driver.find_elements(By.XPATH, xpath_button)
+                for btn in buttons:
+                    if is_truly_visible(btn):
+                        # Check if button contains an anchor or is clickable
+                        anchors = btn.find_elements(By.TAG_NAME, 'a')
+                        if anchors or btn.is_enabled():
+                            manual_next = True
+                            detected_signals.append(f"Manual Detection: Found button with NEXT pattern '{pattern}'")
+                            break
+                if manual_next:
+                    break
+                
+                # Check anchor tags with NEXT patterns
+                if not manual_next:
+                    xpath_anchor = f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}') and @href]"
+                    anchors = self.driver.find_elements(By.XPATH, xpath_anchor)
+                    for anchor in anchors:
+                        if is_truly_visible(anchor) and anchor.get_attribute('href'):
+                            href = anchor.get_attribute('href')
+                            # Skip javascript:void, # anchors, and external domains
+                            if href and not href.startswith('javascript:') and not href == '#':
+                                manual_next = True
+                                detected_signals.append(f"Manual Detection: Found anchor with NEXT pattern '{pattern}'")
+                                break
+                if manual_next:
+                    break
+            
+            # --- Check 2: Buttons/Anchors with PAGESELECT patterns ---
+            if not manual_pageselect:
+                pageselect_patterns = ['first', 'last', '»', '>>', '«', '<<']
+                for pattern in pageselect_patterns:
+                    # Check buttons
+                    xpath_button = f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')]"
+                    buttons = self.driver.find_elements(By.XPATH, xpath_button)
+                    for btn in buttons:
+                        if is_truly_visible(btn):
+                            manual_pageselect = True
+                            detected_signals.append(f"Manual Detection: Found button with PAGESELECT pattern '{pattern}'")
+                            break
+                    if manual_pageselect:
+                        break
+                    
+                    # Check anchors
+                    if not manual_pageselect:
+                        xpath_anchor = f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}') and @href]"
+                        anchors = self.driver.find_elements(By.XPATH, xpath_anchor)
+                        for anchor in anchors:
+                            if is_truly_visible(anchor) and anchor.get_attribute('href'):
+                                href = anchor.get_attribute('href')
+                                if href and not href.startswith('javascript:') and not href == '#':
+                                    manual_pageselect = True
+                                    detected_signals.append(f"Manual Detection: Found anchor with PAGESELECT pattern '{pattern}'")
+                                    break
+                    if manual_pageselect:
+                        break
+                
+                # Check for numbered page links (1, 2, 3)
+                if not manual_pageselect:
+                    for num in ['1', '2', '3']:
+                        xpath = f"//a[@href and text()='{num}']"
+                        elements = self.driver.find_elements(By.XPATH, xpath)
+                        if len(elements) >= 2:  # At least 2 numbered links
+                            manual_pageselect = True
+                            detected_signals.append("Manual Detection: Found numbered page links (1, 2, 3)")
+                            break
+            
+            # --- Check 3: Buttons/Anchors with LOADMORE patterns ---
+            if not manual_loadmore:
+                loadmore_patterns = [
+                    'load more', 'show more', 'view more', 'see more', 'load all', 'show all',
+                    'view more jobs', 'view all jobs', 'see all jobs', 'more jobs', 'all jobs',
+                    'view jobs', 'show jobs', 'load jobs', 'see jobs'
+                ]
+                for pattern in loadmore_patterns:
+                    # Check buttons
+                    xpath_button = f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}')]"
+                    buttons = self.driver.find_elements(By.XPATH, xpath_button)
+                    for btn in buttons:
+                        if is_truly_visible(btn):
+                            manual_loadmore = True
+                            detected_signals.append(f"Manual Detection: Found button with LOADMORE pattern '{pattern}'")
+                            break
+                    if manual_loadmore:
+                        break
+                    
+                    # Check anchors with LoadMore keywords
+                    if not manual_loadmore:
+                        xpath_anchor = f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{pattern}') and @href]"
+                        anchors = self.driver.find_elements(By.XPATH, xpath_anchor)
+                        for anchor in anchors:
+                            if is_truly_visible(anchor):
+                                manual_loadmore = True
+                                detected_signals.append(f"Manual Detection: Found anchor with LOADMORE pattern '{pattern}'")
+                                break
+                    if manual_loadmore:
+                        break
+        
+        except Exception as e:
+            detected_signals.append(f"Manual detection error: {str(e)[:50]}")
+        
+        # --- Return based on manual detection (NEXT has priority) ---
+        if manual_next:
+            detected_signals.append("Manual Detection: NEXT patterns found")
+            print(f"  Signals: {'; '.join(detected_signals)}")
+            return 'next', f"Final decision: next (manual detection). Signals: {detected_signals}"
+        
+        if manual_pageselect:
+            detected_signals.append("Manual Detection: PAGESELECT patterns found")
+            print(f"  Signals: {'; '.join(detected_signals)}")
+            return 'pageselect', f"Final decision: pageselect (manual detection). Signals: {detected_signals}"
+        
+        if manual_loadmore:
+            detected_signals.append("Manual Detection: LOADMORE patterns found")
+            print(f"  Signals: {'; '.join(detected_signals)}")
+            return 'loadmore', f"Final decision: loadmore (manual detection). Signals: {detected_signals}"
+        
+        # ============================================================
+        # BRANCH 2: BEHAVIORAL (Autopager NO paginator, Manual detection also failed)
+        # Order: LoadMore → Scrolldown → AI Judge → Fallback to 'next'
+        # ============================================================
+        detected_signals.append("Branch: BEHAVIORAL (No pagination detected by Autopager or manual detection)")
+        
+        # --- Step 1: LoadMore Button Detection (FIRST) ---
+        detected_signals.append("Behavioral: Testing LoadMore button FIRST...")
+        loadmore_button = None
+        
+        # Common LoadMore button patterns
+        loadmore_keywords = [
+            "load more", "show more", "view more", "see more", "load all",
+            "show all", "view all", "see all", "more jobs", "more results",
+            "load additional", "show additional", "view more jobs", "view all jobs",
+            "see all jobs", "all jobs", "view jobs", "show jobs", "load jobs", "see jobs"
+        ]
+        
+        try:
+            # Search for buttons with LoadMore keywords
+            for keyword in loadmore_keywords:
+                # Try button tags
+                buttons = self.driver.find_elements(By.XPATH, 
+                    f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')]")
+                if buttons and is_truly_visible(buttons[0]):
+                    loadmore_button = buttons[0]
+                    detected_signals.append(f"LoadMore button found: '{keyword}'")
+                    break
+                
+                # Try links/anchors with LoadMore keywords
+                if not loadmore_button:
+                    links = self.driver.find_elements(By.XPATH, 
+                        f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')]")
+                    if links and is_truly_visible(links[0]):
+                        loadmore_button = links[0]
+                        detected_signals.append(f"LoadMore link found: '{keyword}'")
+                        break
+                
+                if loadmore_button:
+                    break
+        except Exception as e:
+            detected_signals.append(f"LoadMore detection error: {str(e)[:50]}")
+        
+        # If LoadMore button found, test it by clicking
+        if loadmore_button:
+            try:
+                detected_signals.append("Behavioral: LoadMore button detected, testing click...")
+                initial_element_count_lm = len(self.driver.find_elements(By.XPATH, "//*"))
+                
+                # Click the LoadMore button
+                self.driver.execute_script("arguments[0].scrollIntoView(true);", loadmore_button)
+                time.sleep(1)
+                loadmore_button.click()
+                time.sleep(3)  # Wait for content to load
+                
+                final_element_count_lm = len(self.driver.find_elements(By.XPATH, "//*"))
+                
+                # Check if content increased after clicking
+                if final_element_count_lm > initial_element_count_lm + 5:
+                    detected_signals.append(f"Behavioral: LoadMore CONFIRMED (elements: {initial_element_count_lm} → {final_element_count_lm})")
+                    print(f"  Signals: {'; '.join(detected_signals)}")
+                    return 'loadmore', f"Final decision: loadmore. Signals: {detected_signals}"
+                else:
+                    detected_signals.append("LoadMore button found but no content increase after click")
+            except Exception as e:
+                detected_signals.append(f"LoadMore click test failed: {str(e)[:50]}")
+        
+        # --- Step 2: Scrolldown Verification (if LoadMore failed) ---
         # Per USER: Wait 2nd-3s to let website load initially
         time.sleep(3)
         
-        detected_signals.append("Behavioral: Testing Scrolldown FIRST...")
+        detected_signals.append("Behavioral: Testing Scrolldown with header/footer awareness...")
         scrolldown_confirmed = False
         
         # Initial state measurements
         initial_url = self.driver.current_url.split('#')[0].rstrip('/')
         initial_height = self.get_page_height()
         initial_element_count = len(self.driver.find_elements(By.XPATH, "//*"))
+        
+        # Detect footer presence
+        has_footer = False
+        footer_position = None
+        try:
+            # Look for footer elements
+            footer_selectors = [
+                "//footer", "//div[@id='footer']", "//div[@class='footer']",
+                "//div[contains(@class, 'footer')]", "//div[contains(@id, 'footer')]"
+            ]
+            for selector in footer_selectors:
+                footers = self.driver.find_elements(By.XPATH, selector)
+                if footers and is_truly_visible(footers[0]):
+                    has_footer = True
+                    footer_position = footers[0].location['y']
+                    detected_signals.append(f"Detected footer at position Y={footer_position}")
+                    break
+        except:
+            pass
+        
+        # Measure content area (between header and footer if they exist)
+        try:
+            # Try to find main content area
+            content_area = None
+            content_selectors = [
+                "//main", "//div[@role='main']", "//div[@id='content']",
+                "//div[contains(@class, 'content')]", "//div[contains(@class, 'jobs')]",
+                "//div[contains(@class, 'listings')]", "//body"
+            ]
+            for selector in content_selectors:
+                elements = self.driver.find_elements(By.XPATH, selector)
+                if elements and is_truly_visible(elements[0]):
+                    content_area = elements[0]
+                    break
+            
+            if content_area:
+                initial_content_elements = len(content_area.find_elements(By.XPATH, ".//*"))
+                detected_signals.append(f"Content area has {initial_content_elements} initial elements")
+        except:
+            initial_content_elements = initial_element_count
         
         # First Scroll Attempt
         self.scroll_to_bottom()
@@ -615,13 +959,36 @@ class PaginationClassifier:
         final_height = self.get_page_height()
         final_element_count = len(self.driver.find_elements(By.XPATH, "//*"))
         
-        # Hard crawler rules for scrolldown: height increase, elements increase, URL unchanged
-        if (final_height > initial_height + 400 or final_element_count > initial_element_count + 8) and current_url == initial_url:
-            detected_signals.append("Behavioral: Scrolldown CONFIRMED (attempt 1 - 2s wait)")
-            print(f"  Signals: {'; '.join(detected_signals)}")
-            return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
+        # Measure content growth
+        content_grew = False
+        try:
+            if content_area:
+                final_content_elements = len(content_area.find_elements(By.XPATH, ".//*"))
+                if final_content_elements > initial_content_elements + 5:
+                    content_grew = True
+                    detected_signals.append(f"Content area grew from {initial_content_elements} to {final_content_elements} elements")
+        except:
+            pass
         
-        # Second Scroll Attempt (Longer wait)
+        # Scrolldown rules:
+        # 1. If has footer: Content between header/footer should grow
+        # 2. If no footer: Page height should keep increasing
+        # 3. URL should remain the same (no navigation)
+        if current_url == initial_url:
+            if has_footer:
+                # With footer: Check if content area expanded (not just footer moved down)
+                if content_grew or (final_element_count > initial_element_count + 8):
+                    detected_signals.append("Behavioral: Scrolldown CONFIRMED (content between header/footer expanded)")
+                    print(f"  Signals: {'; '.join(detected_signals)}")
+                    return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
+            else:
+                # No footer: Check if page keeps growing (infinite scroll)
+                if final_height > initial_height + 400 or final_element_count > initial_element_count + 8:
+                    detected_signals.append("Behavioral: Scrolldown CONFIRMED (no footer, page keeps growing)")
+                    print(f"  Signals: {'; '.join(detected_signals)}")
+                    return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
+        
+        # Second Scroll Attempt (Longer wait for slow-loading content)
         detected_signals.append("Scroll attempt 1: No growth. Waiting 5s for retry...")
         time.sleep(5) # Per USER: wait for 3-5 sec more
         self.scroll_to_bottom()
@@ -631,73 +998,32 @@ class PaginationClassifier:
         final_height = self.get_page_height()
         final_element_count = len(self.driver.find_elements(By.XPATH, "//*"))
         
-        if (final_height > initial_height + 400 or final_element_count > initial_element_count + 8) and current_url == initial_url:
-            detected_signals.append("Behavioral: Scrolldown CONFIRMED (attempt 2 - 5s additional wait)")
-            print(f"  Signals: {'; '.join(detected_signals)}")
-            return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
-        else:
-            detected_signals.append("Scroll attempt 2: Still no scrolldown growth.")
-        
-        # --- Step 2: LoadMore Button Detection ---
-        detected_signals.append("Behavioral: Scrolldown failed, testing LoadMore button...")
-        loadmore_button = None
-        
-        # Common LoadMore button patterns
-        loadmore_keywords = [
-            "load more", "show more", "view more", "see more", "load all",
-            "show all", "view all", "see all", "more jobs", "more results",
-            "load additional", "show additional"
-        ]
-        
+        # Re-check content growth
+        content_grew = False
         try:
-            # Search for buttons with LoadMore keywords
-            for keyword in loadmore_keywords:
-                # Try button tags
-                buttons = self.driver.find_elements(By.XPATH, 
-                    f"//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')]")
-                if buttons and buttons[0].is_displayed():
-                    loadmore_button = buttons[0]
-                    detected_signals.append(f"LoadMore button found: '{keyword}'")
-                    break
-                
-                # Try links/anchors
-                if not loadmore_button:
-                    links = self.driver.find_elements(By.XPATH, 
-                        f"//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{keyword}')]")
-                    if links and links[0].is_displayed():
-                        loadmore_button = links[0]
-                        detected_signals.append(f"LoadMore link found: '{keyword}'")
-                        break
-            
-            # If LoadMore button found, verify it's clickable
-            if loadmore_button:
-                try:
-                    # Record state before click
-                    before_height = self.get_page_height()
-                    before_elements = len(self.driver.find_elements(By.XPATH, "//*"))
-                    
-                    # Click the button
-                    loadmore_button.click()
-                    time.sleep(3)  # Wait for content to load
-                    
-                    # Check if content increased
-                    after_height = self.get_page_height()
-                    after_elements = len(self.driver.find_elements(By.XPATH, "//*"))
-                    
-                    if after_height > before_height + 200 or after_elements > before_elements + 5:
-                        detected_signals.append("Behavioral: LoadMore CONFIRMED (content increased after click)")
-                        print(f"  Signals: {'; '.join(detected_signals)}")
-                        return 'loadmore', f"Final decision: loadmore. Signals: {detected_signals}"
-                    else:
-                        detected_signals.append("LoadMore button clicked but no content increase detected")
-                except Exception as e:
-                    detected_signals.append(f"LoadMore button found but click failed: {str(e)[:50]}")
-            else:
-                detected_signals.append("Behavioral: No LoadMore button found")
-        except Exception as e:
-            detected_signals.append(f"LoadMore detection error: {str(e)[:50]}")
+            if content_area:
+                final_content_elements = len(content_area.find_elements(By.XPATH, ".//*"))
+                if final_content_elements > initial_content_elements + 5:
+                    content_grew = True
+                    detected_signals.append(f"Content area grew from {initial_content_elements} to {final_content_elements} elements (attempt 2)")
+        except:
+            pass
         
-        # --- Step 3: AI Judge (if ambiguous) ---
+        if current_url == initial_url:
+            if has_footer:
+                if content_grew or (final_element_count > initial_element_count + 8):
+                    detected_signals.append("Behavioral: Scrolldown CONFIRMED (content expanded, attempt 2)")
+                    print(f"  Signals: {'; '.join(detected_signals)}")
+                    return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
+            else:
+                if final_height > initial_height + 400 or final_element_count > initial_element_count + 8:
+                    detected_signals.append("Behavioral: Scrolldown CONFIRMED (page keeps growing, attempt 2)")
+                    print(f"  Signals: {'; '.join(detected_signals)}")
+                    return 'scrolldown', f"Final decision: scrolldown. Signals: {detected_signals}"
+        
+        detected_signals.append("Scroll attempt 2: Still no scrolldown growth.")
+        
+        # --- Step 3: AI Judge (if LoadMore and Scrolldown both failed) ---
         detected_signals.append("Behavioral: Ambiguous, consulting AI Judge...")
         if self.api_key:
             page_snippet = get_page_snippet(self.driver)
