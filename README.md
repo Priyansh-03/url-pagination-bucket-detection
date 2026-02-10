@@ -18,6 +18,16 @@
 - [Performance](#performance)
 - [Troubleshooting](#troubleshooting)
 - [Examples](#examples)
+- [Branch Differentiator](#-branch-differentiator)
+
+---
+
+## 🚀 Branch Differentiator
+
+| Branch | Description | Fallback Strategy |
+|--------|-------------|-------------------|
+| **`main`** | Production-stable branch with comprehensive behavioral detection. | **Dual Fallback**: Prioritizes `NEXT` for structural links, but allows `SCROLLDOWN` or `LOADMORE` in behavioral paths before defaulting to `NEXT`. |
+| **`local`** | Local-specific optimization branch. | **Strict Fallback**: Consolidates all ambiguous or behavioral uncertainties into the `NEXT` bucket for consistent sequential processing. |
 
 ---
 
@@ -46,10 +56,10 @@ The classifier categorizes pages into **4 buckets** with pipeline-aware fallback
 
 | Bucket | Description | Example Elements | Common In |
 |--------|-------------|------------------|-----------|
-| **NEXT** | Sequential navigation with Next/Previous button or single arrow (takes priority if both present) | `Next`, `Previous`, `>`, `<`, `→`, `←`, `›`, `‹` | Traditional career pages, ATS systems (default for structural path) |
+| **NEXT** | Sequential navigation with Next/Previous button or single arrow (takes priority if both present) | `Next`, `Previous`, `>`, `<`, `→`, `←`, `›`, `‹` | Traditional career pages, ATS systems (default fallback for both paths) |
 | **PAGESELECT** | Direct page number selection & jump buttons | `1 2 3 4`, `First`, `Last`, `»`, `>>`, `«`, `<<` | Government sites, large job boards |
 | **LOADMORE** | Button to load more content | `Load More`, `Show More`, `View All` | Modern web apps, startups |
-| **SCROLLDOWN** | Infinite scroll (automatic loading) | No button, content loads on scroll | Social platforms, modern sites (default for behavioral path) |
+| **SCROLLDOWN** | Infinite scroll (automatic loading) | No button, content loads on scroll | Social platforms, modern sites |
 
 ---
 
@@ -221,7 +231,7 @@ INPUT: CSV File (URLs)
         └────────┬───────────┘
                  │
                  ↓
-         Return: LOADMORE or SCROLLDOWN (behavioral fallback: scrolldown)
+         Return: LOADMORE or SCROLLDOWN (behavioral fallback: next)
 
 ╔═════════════════════════════════════════════════════════════════════════╗
 ║                      RESULT PROCESSING & SAVING                          ║
@@ -400,12 +410,12 @@ Autopager Detection
                    ├─→ Scroll increases height? → SCROLLDOWN
                    ├─→ Load More button? → LOADMORE
                    ├─→ Ambiguous? → AI Judge (if available)
-                   └─→ Fallback → SCROLLDOWN (behavioral default)
+                   └─→ Fallback → NEXT (behavioral default)
 ```
 
 **Pipeline-Aware Fallbacks:**
 - **STRUCTURAL PATH** (links found): Defaults to `NEXT` when uncertain
-- **BEHAVIORAL PATH** (no links): Defaults to `SCROLLDOWN` when uncertain
+- **BEHAVIORAL PATH** (no links): Defaults to `NEXT` when uncertain
 
 ### Progressive Retry Strategy
 

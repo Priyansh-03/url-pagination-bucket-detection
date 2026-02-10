@@ -95,20 +95,21 @@ Return ONLY: next OR pageselect"""
             prompt = f"""Address: {url}
 Signals detected so far: {"; ".join(detected_signals)}
 
-TASK: This page has NO traditional pagination links. Your job is to decide between EXACTLY TWO options:
+TASK: This page has NO traditional pagination links. Your job is to decide between THREE options:
 - **loadmore**: A button that says "Load More", "Show More", "View More", "Show All" that loads content WITHOUT navigating.
 - **scrolldown**: Content loads AUTOMATICALLY when scrolling down (infinite scroll), no button click needed.
+- **next**: If no clear loadmore button or scrolldown behavior, likely has hidden/traditional pagination.
 
 RULES:
 - If there's a visible button to load more content → loadmore
 - If content appears automatically as you scroll → scrolldown
-- If uncertain, default to scrolldown
+- If uncertain, no clear signals, or very few items → next (most common fallback)
 
 HTML Snippet:
 {page_snippet[:3000]}
 
-Return ONLY: loadmore OR scrolldown"""
-            valid_choices = ['loadmore', 'scrolldown']
+Return ONLY: loadmore OR scrolldown OR next"""
+            valid_choices = ['loadmore', 'scrolldown', 'next']
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -706,9 +707,9 @@ class PaginationClassifier:
                 print(f"  Signals: {'; '.join(detected_signals)}")
                 return ai_decision, f"Final decision: {ai_decision}. Signals: {detected_signals}"
         
-        # --- Step 4: Fallback to SCROLLDOWN (BEHAVIORAL PATH default) ---
-        decision = 'scrolldown'
-        detected_signals.append("Behavioral Fallback: No scrolldown, no loadmore button → defaulting to 'scrolldown'")
+        # --- Step 4: Fallback to NEXT (BEHAVIORAL PATH default) ---
+        decision = 'next'
+        detected_signals.append("Behavioral Fallback: No scrolldown, no loadmore button → defaulting to 'next'")
         print(f"  Signals: {'; '.join(detected_signals)}")
         return decision, f"Final decision: {decision}. Signals: {detected_signals}"
     
