@@ -27,7 +27,10 @@
 | Branch | Description | Fallback Strategy |
 |--------|-------------|-------------------|
 | **`main`** | Production-stable branch with comprehensive behavioral detection. | **Dual Fallback**: Prioritizes `NEXT` for structural links, but allows `SCROLLDOWN` or `LOADMORE` in behavioral paths before defaulting to `NEXT`. |
-| **`local`** | Local-specific optimization branch. | **Strict Fallback**: Consolidates all ambiguous or behavioral uncertainties into the `NEXT` bucket for consistent sequential processing. |
+| **`local` (Active)** | Local-specific optimization branch. | **Strict Fallback**: Consolidates all ambiguous or behavioral uncertainties into the `NEXT` bucket for consistent sequential processing. |
+
+> [!NOTE]
+> You are currently on the **`local`** branch. This branch is configured for strict `NEXT` fallbacks.
 
 ---
 
